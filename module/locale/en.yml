@@ -32,7 +32,12 @@ help_enabled_tooltip: |
   When enemies close in on an AI lord, its AI allies send their attack army to its castle, just
   as they do when you ask them for help. An ally only comes when it isn't under threat itself,
   isn't busy attacking, and has the army size its AI character needs before it helps anyone.
-  The troops stay until the castle is safe again.
+  The troops stay at least until the castle is safe again (see the next setting).
+help_months: Stay at least this many months
+help_months_tooltip: |
+  Once the danger is over, the helpers still stay at the ally's castle for this many in-game
+  months - unless the ally feels strong again before that, then they leave. 0 sends them home
+  as soon as the danger is over.
 army_enabled: Send only part of the attack army
 army_enabled_tooltip: |
   Normally an AI ally sends its whole attack army when it helps. With this on, it sends only

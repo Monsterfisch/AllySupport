@@ -65,6 +65,17 @@ options:
     contents:
       type: boolean
       value: true
+  - url: ally-support.help.months
+    name: ally-support-help-months
+    text: '{{help_months}}'
+    tooltip: '{{help_months_tooltip}}'
+    display: Number
+    contents:
+      type: integer
+      value: 6
+      min: 0
+      max: 24
+      step: 1
   - url: ally-support.army.enabled
     name: ally-support-army-enabled
     text: '{{army_enabled}}'

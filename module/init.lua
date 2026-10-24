@@ -25,7 +25,9 @@
   3. Help: an idle AI that is not nervous and has its AIC's support threshold of attack troops
      answers a nervous AI ally the way it answers the player: requestStateUnk = 2,
      playerID_askerUnk = the ally. The AI's own state machine then sends the attack troops to
-     that keep every cycle. The request is dropped when the ally is safe again.
+     that keep every cycle. The help ends once the ally is out of danger (not nervous) and
+     either the minimum stay (6 in-game months by default) is over or the ally feels strong
+     again (aiStrengthFeeling 2, set monthly by updateAIStrengthState).
   4. Army share: the game sends every attack troop to help. Whenever an AI is helping anyone
      (player or AI), 25% of its attack army (behaviours 10-20) is moved into a troop of its own
      (createTribeForPlayer) that the AI has not registered in aiTribeIDs and so never orders,
@@ -51,7 +53,7 @@ local MODULE_NAME = "ally-support"
 local DEFAULTS = {
   goods = { enabled = true },
   gold = { enabled = true, factor = 100, share = 25 },
-  help = { enabled = true },
+  help = { enabled = true, months = 6 },
   army = { enabled = true, share = 75 },
   gates = { enabled = true },
   diagnostics = { log = false },
@@ -100,6 +102,9 @@ local AOB_TEAMS = "8B 0C 85 ? ? ? ? 8B 44 24 30 3B 0C 85 ? ? ? ?"
 local TEAMS_OPERAND = 0x03
 local AOB_TICKS = "8B 87 50 0A 00 00 8B 8F 98 09 00 00 8B 15"
 local TICKS_OPERAND = 0x0E
+-- processSingleTimeTick copies the date: mov ecx, [year] / mov edx, [month].
+local AOB_DATE = "8B 0D ? ? ? ? 8B 15 ? ? ? ? 89 0D ? ? ? ? 8B CE 89 15"
+local DATE_YEAR, DATE_MONTH = 0x02, 0x08
 
 -- updateGateDrawBridgeOpenCloseLogic, after the capture part: movzx eax, word [edi + enemy timer].
 -- Offsets below are from the hook site (pattern + 1).
@@ -132,7 +137,7 @@ local P = {
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
-  REQUEST_STATE = 0x384C, ASKER = 0x38E4,
+  REQUEST_STATE = 0x384C, ASKER = 0x38E4, STRENGTH_FEELING = 0x30F4,
 }
 local T = { UID = 0x34, STATE = 0x40 }
 -- AIC fields live in the AI state object: (character - 1) * 0x2A4 + field.
@@ -141,6 +146,7 @@ local AIC = { STRIDE = 0x2A4, MIN_GOODS = 0xA4, SUPPORT_THRESHOLD = 0x1FC }
 local GOLD = 15
 local LORD_TYPE = 55
 local REQUEST_HELP = 2
+local STRONG = 2                -- aiStrengthFeeling: 0 normal, 1 weak, 2 strong
 local GOLD_MIN_FLOOR = 10       -- a trade minimum below this counts as this for the gold line
 local LOAD_GAP = 4000           -- a jump in the tick counter this big is a load
 
@@ -220,6 +226,7 @@ local visitors = {}     -- per helped player: { [helper] = true } whose troops m
 local visitorUnits = {} -- per helper: its attack units sent to help
 local gates = {}        -- per watched gatehouse id: { owner, next, hold }
 local ordered = {}      -- per troop id: tick it was last ordered inside
+local helpSince = {}    -- per AI player helping an AI: { asker, month } the help started
 local lastTick = nil
 local broken = false
 
@@ -314,10 +321,14 @@ end
 -- 3: AI allies come to help each other
 ---------------------------------------------------------------------------------------
 
-local function needsHelp(r, h)
+local function canBeHelped(r, h)
   return allies(h, r) and isAI(r) and lordAlive(r) and rd32(player(r) + P.HAS_KEEP) ~= 0
-    and nervous(r)
 end
+
+local function needsHelp(r, h) return canBeHelped(r, h) and nervous(r) end
+
+local function months() return rd32(G.year) * 12 + rd32(G.month) end
+local function strong(r) return rd32(player(r) + P.STRENGTH_FEELING) == STRONG end
 
 local function answerHelp(h)
   local base = player(h)
@@ -325,18 +336,32 @@ local function answerHelp(h)
   if state == REQUEST_HELP then
     -- An AI asker can only be one this module set up (a human only asks for themselves).
     local asker = rd32(base + P.ASKER)
-    if asker >= 1 and asker <= 8 and isAI(asker) and not needsHelp(asker, h) then
-      wr32(base + P.REQUEST_STATE, 0)
-      diag("player %d stops helping player %d", h, asker)
+    if asker >= 1 and asker <= 8 and isAI(asker) then
+      local since = helpSince[h]
+      if since == nil or since.asker ~= asker then
+        since = { asker = asker, month = months() }    -- after a load the stay starts again
+        helpSince[h] = since
+      end
+      -- Stay while the ally is in danger, and after that until the minimum stay is over or
+      -- the ally feels strong again.
+      local stayed = months() - since.month
+      if not canBeHelped(asker, h)
+          or (not nervous(asker) and (stayed >= O.stayMonths or strong(asker))) then
+        wr32(base + P.REQUEST_STATE, 0)
+        helpSince[h] = nil
+        diag("player %d stops helping player %d after %d months", h, asker, stayed)
+      end
     end
     return
   end
+  helpSince[h] = nil
   if state ~= 0 or rd32(base + P.AI_STATE) ~= 0 or nervous(h) then return end
   if rd32(base + P.ATTACK_TROOPS) < aic(h, AIC.SUPPORT_THRESHOLD) then return end
   for r = 1, 8 do
     if needsHelp(r, h) then
       wr32(base + P.ASKER, r)
       wr32(base + P.REQUEST_STATE, REQUEST_HELP)
+      helpSince[h] = { asker = r, month = months() }
       diag("player %d comes to help player %d", h, r)
       return
     end
@@ -613,7 +638,7 @@ end
 local function checkLoad()
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
-    kept, swept, visitors, visitorUnits, gates, ordered = {}, {}, {}, {}, {}, {}
+    kept, swept, visitors, visitorUnits, gates, ordered, helpSince = {}, {}, {}, {}, {}, {}, {}
     if G.gateFlags ~= nil then
       for id = 0, B.MAX - 1 do wr8(G.gateFlags + id, 0) end
     end
@@ -718,6 +743,8 @@ local function resolve()
 
   G.teams = rd32(scan(AOB_TEAMS, "the team table") + TEAMS_OPERAND)
   G.ticks = rd32(scan(AOB_TICKS, "the game tick counter") + TICKS_OPERAND)
+  local date = scan(AOB_DATE, "the game date")
+  G.year, G.month = rd32(date + DATE_YEAR), rd32(date + DATE_MONTH)
 
   F.enough = core.exposeCode(enough, 4, 1)
   F.gain = core.exposeCode(gain, 4, 1)
@@ -738,6 +765,7 @@ local function enable(self, config)
   O.goldShare = number(setting(config, "gold", "share"), 0, 100)
   if O.goldShare == 0 then O.gold = false end
   O.help = setting(config, "help", "enabled") == true
+  O.stayMonths = number(setting(config, "help", "months"), 0, 120)
   O.army = setting(config, "army", "enabled") == true
   O.armyShare = number(setting(config, "army", "share"), 0, 100)
   if O.armyShare == 0 then O.army = false end
