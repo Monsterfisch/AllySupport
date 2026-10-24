@@ -26,9 +26,14 @@
      answers a nervous AI ally the way it answers the player: requestStateUnk = 2,
      playerID_askerUnk = the ally. The AI's own state machine then sends the attack troops to
      that keep every cycle. The request is dropped when the ally is safe again.
-  4. Army share: whenever an AI is helping anyone (player or AI), its attack troops are topped up
-     once to 75% of its whole army, taking raiders, patrols and defenders into the main army
-     troop, and the relief is sent at once.
+  4. Army share: the game sends every attack troop to help. Whenever an AI is helping anyone
+     (player or AI), 25% of its attack army (behaviours 10-20) is moved into a troop of its own
+     (createTribeForPlayer) that the AI has not registered in aiTribeIDs and so never orders,
+     and sent back to its own camp; the other 75% go. Jobs (engineers, laddermen, tunnellers,
+     siege crews) stay home first. Recruits joining the attack army while it helps are split
+     the same way. When the help ends the kept troops go back into the AI's own troops
+     (addUnitToItsTribe). Nothing is written to the save: after a load, attack units in
+     troops the AI has not registered go back to the AI and are split again.
 ]]
 
 local MODULE_NAME = "ally-support"
@@ -57,6 +62,9 @@ local ITS_AI_TYPE = { 0x1D, { 0x83, 0xBE } }
 local ITS_TRIBES = { 0x3F, { 0xB9 } }
 local AOB_REMOVE_FROM_TRIBE = "53 55 56 8B 74 24 10 8B D9 8B CE 69 C9 90 04 00 00 66 83 B9 ? ? ? ? 00 57 8B 7C 24 18"
 local REMOVE_STRIDE = { 0x5B, { 0x69, 0xC0 } }
+local ITS_ADD_TO_TRIBE = 0x44
+local AOB_CREATE_TRIBE = "53 55 8B 6C 24 0C 56 57 BF ? ? 00 00 2B FD 33 DB 3B FB 7E"
+local AOB_MOVE = "83 EC 34 33 C0 55 8B 6C 24 44 57 8B 7C 24 44 3B F8 89 4C 24 08 89 44 24 18"
 
 -- ProcessAllyRequestingGoods, the branch where an AI ally sends the player what he asked for.
 local AOB_GIFT = "53 8B 5C 24 1C 55 53 56 B9 ? ? ? ? E8 ? ? ? ? 8B 6C 24 1C 55 57 53 B9 ? ? ? ? E8 ? ? ? ? 6A 00 55 57 56 B9 ? ? ? ? E8"
@@ -72,8 +80,10 @@ local AOB_ENOUGH = "8B 44 24 04 8B D0 69 D2 F4 39 00 00 8B 92 ? ? ? ? 85 D2 75 0
 local AOB_SEND = "8B 87 ? ? ? ? 83 F8 01 74 ? 83 F8 02 75 ? 8B 87 ? ? ? ? 50 B9"
 local SEND_STATE = { 0x00, { 0x8B, 0x87 } }
 local SEND_ASKER = { 0x10, { 0x8B, 0x87 } }
-local SEND_CLEAR_RALLY = 0x28
 local SEND_TROOPS = 0x37
+-- sendUnitsToPlayerIDsKeepIfPossible reads the helper's own camp: y, then x.
+local CAMP_Y = { 0x16, { 0x8B, 0x9E } }
+local CAMP_X = { 0x1D, { 0x8B, 0xBE } }
 
 local AOB_TEAMS = "8B 0C 85 ? ? ? ? 8B 44 24 30 3B 0C 85 ? ? ? ?"
 local TEAMS_OPERAND = 0x03
@@ -87,7 +97,8 @@ local TICKS_OPERAND = 0x0E
 local U = { STRIDE = 0x490, STATE = 0x8C, TYPE = 0x8E, OWNER = 0x96, UID = 0x98, DYING = 0x2A0,
   TRIBE = 0x2D8, BEHAVIOUR = 0x42A, STATE_OFFSET = 0x614 }
 local P = {
-  STRIDE = 0x39F4, HAS_KEEP = 0x94, RESOURCES = 0x4D0, LORD = 0x21F8, LORD_UID = 0x21FC,
+  STRIDE = 0x39F4, HAS_KEEP = 0x94, CAMP_X = 0x1D8, CAMP_Y = 0x1DC, RESOURCES = 0x4D0,
+  LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
   REQUEST_STATE = 0x384C, ASKER = 0x38E4,
@@ -99,18 +110,15 @@ local AIC = { STRIDE = 0x2A4, MIN_GOODS = 0xA4, SUPPORT_THRESHOLD = 0x1FC }
 local GOLD = 15
 local LORD_TYPE = 55
 local REQUEST_HELP = 2
-local MAIN_ARMY = 20
-local MAIN_ARMY_SLOTS = { 0xC0, 0xC7 }
 local GOLD_MIN_FLOOR = 10       -- a trade minimum below this counts as this for the gold line
 local LOAD_GAP = 4000           -- a jump in the tick counter this big is a load
 
--- Units that are no fighting force: tunnellers, engineers, laddermen, the lord, siege engines.
-local NOT_ARMY = { [5] = true, [29] = true, [30] = true, [39] = true, [40] = true, [41] = true,
-  [55] = true, [58] = true, [59] = true, [60] = true, [61] = true, [77] = true }
--- aiUnitBehaviourType: 10-20 attack troops (all sent to help), the rest are taken in this
--- order: raiders, patrols, defenders.
+-- aiUnitBehaviourType 10-20: the attack army, the troops the game sends to help.
 local ATTACK_FIRST, ATTACK_LAST = 10, 20
-local TAKE_ORDER = { 2, 4, 6, 7, 1 }
+-- No use defending an ally's castle, so these stay home first: tunnellers, engineers,
+-- laddermen, siege engines.
+local STAY_FIRST = { [5] = true, [29] = true, [30] = true, [39] = true, [40] = true, [41] = true,
+  [58] = true, [59] = true, [60] = true, [61] = true, [77] = true }
 
 ---------------------------------------------------------------------------------------
 -- Helpers
@@ -168,7 +176,8 @@ end
 local G = {}             -- addresses, filled by enable
 local F = {}             -- the game's functions, exposed to lua
 local O = {}             -- options
-local toppedUp = {}      -- per AI player: the ally it already topped its relief army up for
+local kept = {}         -- per AI player: { id, uid } of the troop kept home while it helps
+local swept = {}        -- per AI player: troops checked after a load
 local lastTick = nil
 local broken = false
 
@@ -282,67 +291,115 @@ local function answerHelp(h)
 end
 
 ---------------------------------------------------------------------------------------
--- 4: the relief army is at least a share of the whole army
+-- 4: only a share of the attack army goes to help, the rest stays home
 ---------------------------------------------------------------------------------------
 
-local function hasMainArmyTroop(h)
-  local base = player(h)
-  for slot = MAIN_ARMY_SLOTS[1], MAIN_ARMY_SLOTS[2] do
-    local id = rd16(base + P.TRIBE_IDS + slot * 2)
-    if id > 0 and rd16(tribe(id) + T.STATE) == 2
-        and rd32(tribe(id) + T.UID) == rd32(base + P.TRIBE_UIDS + slot * 4) then
-      return true
-    end
-  end
-  return false
+local function tribeAlive(k)
+  return k ~= nil and k.id > 0 and rd16(tribe(k.id) + T.STATE) == 2 and rd32(tribe(k.id) + T.UID) == k.uid
 end
 
-local function topUp(h)
+-- Every troop the AI has registered, by tribe id.
+local function registeredTribes(h)
+  local list = {}
   local base = player(h)
-  if rd32(base + P.REQUEST_STATE) ~= REQUEST_HELP then
-    toppedUp[h] = nil
-    return
+  for slot = 0, 199 do
+    local id = rd16(base + P.TRIBE_IDS + slot * 2)
+    if id > 0 and rd32(tribe(id) + T.UID) == rd32(base + P.TRIBE_UIDS + slot * 4) then
+      list[id] = true
+    end
   end
-  local asker = rd32(base + P.ASKER)
-  if toppedUp[h] == asker or asker < 1 or asker > 8 or not allies(h, asker) or not lordAlive(asker) then
-    return
-  end
-  toppedUp[h] = asker
-  if not hasMainArmyTroop(h) then return end
+  return list
+end
 
-  local army, sent, spare = 0, 0, {}
-  for _, b in ipairs(TAKE_ORDER) do spare[b] = {} end
+-- Calls fn(index, unitAddress, behaviour) for every living attack army unit of h.
+local function eachAttackUnit(h, fn)
   local count = rd32(G.unitsThis)
   for index = 1, count - 1 do
     local u = unit(index)
-    if rd16(u + U.OWNER) == h and rd16(u + U.STATE) == 2 and rd16(u + U.DYING) == 0
-        and not NOT_ARMY[rd16(u + U.TYPE)] then
+    if rd16(u + U.OWNER) == h and rd16(u + U.STATE) == 2 and rd16(u + U.DYING) == 0 then
       local b = rd16(u + U.BEHAVIOUR)
-      if b >= ATTACK_FIRST and b <= ATTACK_LAST then
-        army, sent = army + 1, sent + 1
-      elseif spare[b] ~= nil then
-        army = army + 1
-        table.insert(spare[b], index)
-      end
+      if b >= ATTACK_FIRST and b <= ATTACK_LAST then fn(index, u, b) end
     end
   end
+end
 
-  local need = (army * O.armyShare + 99) // 100 - sent
+local function giveBack(index, from, behaviour)
+  if from > 0 then F.removeFromTribe(G.tribes, index, from) end
+  F.addToItsTribe(G.aiState, index, behaviour)
+end
+
+-- After a load the module knows nothing of the troops it kept home. The AI keeps every attack
+-- unit in a troop it registered, so attack units in an unregistered troop go back to the AI.
+local function sweep(h)
+  local registered = registeredTribes(h)
   local moved = 0
-  for _, b in ipairs(TAKE_ORDER) do
-    for _, index in ipairs(spare[b]) do
+  eachAttackUnit(h, function(index, u, b)
+    local id = rd16(u + U.TRIBE)
+    if id > 0 and not registered[id] then
+      giveBack(index, id, b)
+      moved = moved + 1
+    end
+  end)
+  if moved > 0 then diag("player %d: %d units back in the AI's own troops after loading", h, moved) end
+end
+
+local function release(h)
+  local k = kept[h]
+  kept[h] = nil
+  if not tribeAlive(k) then return end
+  local moved = 0
+  eachAttackUnit(h, function(index, u, b)
+    if rd16(u + U.TRIBE) == k.id then
+      giveBack(index, k.id, b)
+      moved = moved + 1
+    end
+  end)
+  diag("player %d stops helping: %d kept troops back in its army", h, moved)
+end
+
+local function keepHome(h)
+  local base = player(h)
+  local asker = rd32(base + P.ASKER)
+  if rd32(base + P.REQUEST_STATE) ~= REQUEST_HELP or asker < 1 or asker > 8
+      or not allies(h, asker) or not lordAlive(asker) then
+    release(h)
+    return
+  end
+
+  local k = kept[h]
+  if not tribeAlive(k) then k = nil end
+  local registered = registeredTribes(h)
+  local total, home, jobs, fighters = 0, 0, {}, {}
+  eachAttackUnit(h, function(index, u, b)
+    total = total + 1
+    local id = rd16(u + U.TRIBE)
+    if k ~= nil and id == k.id then
+      home = home + 1
+    elseif id > 0 and registered[id] then
+      table.insert(STAY_FIRST[rd16(u + U.TYPE)] and jobs or fighters, { index = index, tribe = id })
+    end
+  end)
+
+  local need = total - (total * O.armyShare + 99) // 100 - home
+  if need <= 0 then return end
+  if k == nil then
+    local id = F.createTribe(G.tribes, h)
+    if id == nil or id <= 0 then return end
+    k = { id = id, uid = rd32(tribe(id) + T.UID) }
+    kept[h] = k
+  end
+  local moved = 0
+  for _, list in ipairs({ jobs, fighters }) do
+    for _, entry in ipairs(list) do
       if moved >= need then break end
-      local old = rd16(unit(index) + U.TRIBE)
-      if old > 0 then F.removeFromTribe(G.tribes, index, old) end
-      F.addToItsTribe(G.aiState, index, MAIN_ARMY)
+      F.removeFromTribe(G.tribes, entry.index, entry.tribe)
+      F.addToTribe(G.tribes, entry.index, k.id)
       moved = moved + 1
     end
   end
-  if moved > 0 then
-    F.clearRally(G.aiState, h)
-    F.send(G.aiState, h, asker)
-  end
-  diag("player %d helps player %d: army %d, attack troops %d, %d more sent", h, asker, army, sent, moved)
+  F.move(G.tribes, k.id, rd32(base + P.CAMP_X), rd32(base + P.CAMP_Y), 0, 0, 0)
+  diag("player %d helps player %d: attack army %d, %d more kept home (%d in all)", h, asker, total,
+    moved, home + moved)
 end
 
 ---------------------------------------------------------------------------------------
@@ -352,13 +409,17 @@ end
 local function update(h)
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
-    toppedUp = {}
+    kept, swept = {}, {}
   end
   lastTick = tick
   if h < 1 or h > 8 or not isAI(h) or not lordAlive(h) then return end
+  if O.army and not swept[h] then
+    swept[h] = true
+    sweep(h)
+  end
   if O.goods or O.gold then answerRequests(h) end
   if O.help then answerHelp(h) end
-  if O.army then topUp(h) end
+  if O.army then keepHome(h) end
 end
 
 local STUB = [[
@@ -397,8 +458,11 @@ local function resolve()
       or readOperand(send, SEND_ASKER, "the help request") ~= G.players + P.ASKER then
     error(MODULE_NAME .. ": the player array is not laid out as the module expects")
   end
-  local clearRally = readCallTarget(send, SEND_CLEAR_RALLY, "clearRallyFlagOnAllAIAttackTribes")
   local sendTroops = readCallTarget(send, SEND_TROOPS, "sendUnitsToPlayerIDsKeepIfPossible")
+  if readOperand(sendTroops, CAMP_X, "the helper's camp") ~= G.players + P.CAMP_X
+      or readOperand(sendTroops, CAMP_Y, "the helper's camp") ~= G.players + P.CAMP_Y then
+    error(MODULE_NAME .. ": the player array is not laid out as the module expects")
+  end
 
   G.teams = rd32(scan(AOB_TEAMS, "the team table") + TEAMS_OPERAND)
   G.ticks = rd32(scan(AOB_TICKS, "the game tick counter") + TICKS_OPERAND)
@@ -408,8 +472,9 @@ local function resolve()
   F.loss = core.exposeCode(loss, 5, 1)
   F.removeFromTribe = core.exposeCode(remove, 3, 1)
   F.addToItsTribe = core.exposeCode(its, 3, 1)
-  F.clearRally = core.exposeCode(clearRally, 2, 1)
-  F.send = core.exposeCode(sendTroops, 3, 1)
+  F.addToTribe = core.exposeCode(readCallTarget(its, ITS_ADD_TO_TRIBE, "addUnitToTribe"), 3, 1)
+  F.createTribe = core.exposeCode(scan(AOB_CREATE_TRIBE, "createTribeForPlayer"), 2, 1)
+  F.move = core.exposeCode(scan(AOB_MOVE, "giveTribeMoveInstruction"), 7, 1)
 end
 
 local function enable(self, config)

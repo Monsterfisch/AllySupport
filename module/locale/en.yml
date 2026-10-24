@@ -25,23 +25,24 @@ gold_share_tooltip: |
 
 help_group: Troops for allies
 help_group_descr: |
-  AI lords come to the aid of their AI allies, and send most of their army when they help
-  anyone - you included.
+  AI lords come to the aid of their AI allies, and keep part of their attack army home when they
+  help anyone - you included.
 help_enabled: AI allies help each other
 help_enabled_tooltip: |
-  When enemies close in on an AI lord, its AI allies send their troops to its castle, just as
-  they do when you ask them for help. An ally only comes when it isn't under threat itself,
+  When enemies close in on an AI lord, its AI allies send their attack army to its castle, just
+  as they do when you ask them for help. An ally only comes when it isn't under threat itself,
   isn't busy attacking, and has the army size its AI character needs before it helps anyone.
   The troops stay until the castle is safe again.
-army_enabled: Send most of the army when helping
+army_enabled: Send only part of the attack army
 army_enabled_tooltip: |
-  Normally an AI ally only sends the troops it has gathered for its next attack. With this on,
-  when it starts helping you or an AI ally it also sends raiders, patrols and castle defenders
-  until the troops sent make up the share below of its whole army. Siege engines, engineers,
-  laddermen and tunnellers don't count.
-army_share: Share of the army sent (%)
+  Normally an AI ally sends its whole attack army when it helps. With this on, it sends only
+  the share below and keeps the rest at its own camp. Castle defenders, patrols and raiders
+  never go. Engineers, laddermen, tunnellers and siege engines are the first to stay home. When
+  the help ends, the troops kept home rejoin the army.
+army_share: Share of the attack army sent (%)
 army_share_tooltip: |
-  If the troops it gathered for its attack are already more than this, they all still go.
+  With 75, an attack army of 40 sends 30 and keeps 10 home. Troops recruited while it helps are
+  split the same way.
 
 diagnostics_group: Diagnostics
 diagnostics_group_descr: |
@@ -49,4 +50,4 @@ diagnostics_group_descr: |
 diagnostics_log: Write what the allies send to the log
 diagnostics_log_tooltip: |
   Writes a line to ucp3.log whenever an AI sends goods or gold, starts or stops helping an
-  ally, or sends extra troops.
+  ally, or keeps troops home.

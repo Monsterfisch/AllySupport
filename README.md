@@ -3,7 +3,7 @@
 A UCP3 module for Stronghold Crusader and Stronghold Crusader Extreme. AI allies help each other
 the way they already help the player: they answer each other's requests for goods (by their AIC
 trade minimum), rich lords send gold, they come to each other's aid, and an AI that helps anyone
-sends at least 75% of its army.
+sends 75% of its attack army and keeps the rest home.
 
 What the module does, in plain English, is in `module/locale/description-en.md`; how it does it
 is in the comment at the top of `module/init.lua`.

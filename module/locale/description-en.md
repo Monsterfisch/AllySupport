@@ -1,7 +1,7 @@
 # Ally Support
 
 **Author**: Monsterfish
-**Version**: 1.0.0
+**Version**: 1.0.1
 
 AI allies help each other the way they already help you. Every part can be switched off in the
 settings.
@@ -24,10 +24,11 @@ ally poorer than itself.
 - **AI allies help each other.** When enemies close in on an AI lord, its AI allies send their
   troops, just as they do when you ask for help. An ally only comes if it isn't under threat
   itself, isn't busy attacking, and has the army size its AI character needs before helping.
-  The troops stay until the castle is safe.
-- **Most of the army goes.** Whenever an AI ally starts helping - you or another AI - it sends
-  at least 75% of its army, taking raiders, patrols and castle defenders along with the troops
-  it gathered for its next attack.
+  Its attack army stays until the castle is safe.
+- **75% of the attack army goes.** Whenever an AI ally helps - you or another AI - it sends
+  75% of its attack army and keeps the rest at its own camp. Castle defenders, patrols and
+  raiders always stay. Engineers, laddermen, tunnellers and siege engines are the first to stay
+  home. When the help ends, everyone rejoins the army.
 
 Only allies (same team) get goods, gold or troops.
 
