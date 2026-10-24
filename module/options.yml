@@ -1,0 +1,101 @@
+options:
+- display: GroupBox
+  category: [Ally Support]
+  header: '{{goods_group}}'
+  text: '{{goods_group_descr}}'
+  hasHeader: true
+  children:
+  - url: ally-support.goods.enabled
+    name: ally-support-goods-enabled
+    text: '{{goods_enabled}}'
+    tooltip: '{{goods_enabled_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
+
+- display: GroupBox
+  category: [Ally Support]
+  header: '{{gold_group}}'
+  text: '{{gold_group_descr}}'
+  hasHeader: true
+  children:
+  - url: ally-support.gold.enabled
+    name: ally-support-gold-enabled
+    text: '{{gold_enabled}}'
+    tooltip: '{{gold_enabled_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
+  - url: ally-support.gold.factor
+    name: ally-support-gold-factor
+    text: '{{gold_factor}}'
+    tooltip: '{{gold_factor_tooltip}}'
+    display: Number
+    contents:
+      type: integer
+      value: 100
+      min: 1
+      max: 1000
+      step: 10
+  - url: ally-support.gold.share
+    name: ally-support-gold-share
+    text: '{{gold_share}}'
+    tooltip: '{{gold_share_tooltip}}'
+    display: Number
+    contents:
+      type: integer
+      value: 25
+      min: 5
+      max: 100
+      step: 5
+
+- display: GroupBox
+  category: [Ally Support]
+  header: '{{help_group}}'
+  text: '{{help_group_descr}}'
+  hasHeader: true
+  children:
+  - url: ally-support.help.enabled
+    name: ally-support-help-enabled
+    text: '{{help_enabled}}'
+    tooltip: '{{help_enabled_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
+  - url: ally-support.army.enabled
+    name: ally-support-army-enabled
+    text: '{{army_enabled}}'
+    tooltip: '{{army_enabled_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
+  - url: ally-support.army.share
+    name: ally-support-army-share
+    text: '{{army_share}}'
+    tooltip: '{{army_share_tooltip}}'
+    display: Number
+    contents:
+      type: integer
+      value: 75
+      min: 5
+      max: 100
+      step: 5
+
+- display: GroupBox
+  category: [Ally Support]
+  header: '{{diagnostics_group}}'
+  text: '{{diagnostics_group_descr}}'
+  hasHeader: true
+  children:
+  - url: ally-support.diagnostics.log
+    name: ally-support-diagnostics-log
+    text: '{{diagnostics_log}}'
+    tooltip: '{{diagnostics_log_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: false

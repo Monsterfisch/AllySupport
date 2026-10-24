@@ -1,0 +1,52 @@
+goods_group: Goods between AI allies
+goods_group_descr: |
+  AI lords ask their allies for goods they can't buy. Normally only you ever answer; with this
+  on, their AI allies answer too.
+goods_enabled: AI allies send each other goods
+goods_enabled_tooltip: |
+  An AI ally only sends what it was asked for if it still keeps its own minimum afterwards
+  (the "minimum goods kept after trade" of its AI character) - the same rule it uses when you
+  ask it. Once one ally has sent the goods, the others don't send them again.
+
+gold_group: Gold between AI allies
+gold_group_descr: |
+  Rich AI lords help out allies that ask them for goods with gold as well.
+gold_enabled: Rich AI allies send gold
+gold_enabled_tooltip: |
+  When an AI ally asks for goods, a lord with lots of gold also sends it some gold - but only
+  if the asker has less gold than the giver.
+gold_factor: Rich means this many times the trade minimum
+gold_factor_tooltip: |
+  A lord counts as rich when its gold is at least this many times its "minimum goods kept after
+  trade". A minimum below 10 counts as 10, so with 100 a lord always keeps at least 1000 gold.
+gold_share: Share of the gold above that line it sends (%)
+gold_share_tooltip: |
+  With 25, a lord whose line is 1000 gold and who has 3000 sends 500.
+
+help_group: Troops for allies
+help_group_descr: |
+  AI lords come to the aid of their AI allies, and send most of their army when they help
+  anyone - you included.
+help_enabled: AI allies help each other
+help_enabled_tooltip: |
+  When enemies close in on an AI lord, its AI allies send their troops to its castle, just as
+  they do when you ask them for help. An ally only comes when it isn't under threat itself,
+  isn't busy attacking, and has the army size its AI character needs before it helps anyone.
+  The troops stay until the castle is safe again.
+army_enabled: Send most of the army when helping
+army_enabled_tooltip: |
+  Normally an AI ally only sends the troops it has gathered for its next attack. With this on,
+  when it starts helping you or an AI ally it also sends raiders, patrols and castle defenders
+  until the troops sent make up the share below of its whole army. Siege engines, engineers,
+  laddermen and tunnellers don't count.
+army_share: Share of the army sent (%)
+army_share_tooltip: |
+  If the troops it gathered for its attack are already more than this, they all still go.
+
+diagnostics_group: Diagnostics
+diagnostics_group_descr: |
+  For testing.
+diagnostics_log: Write what the allies send to the log
+diagnostics_log_tooltip: |
+  Writes a line to ucp3.log whenever an AI sends goods or gold, starts or stops helping an
+  ally, or sends extra troops.
