@@ -34,6 +34,16 @@
      the same way. When the help ends the kept troops go back into the AI's own troops
      (addUnitToItsTribe). Nothing is written to the save: after a load, attack units in
      troops the AI has not registered go back to the AI and are split again.
+  5. Gates: a castle under attack keeps its gates shut, so the relief stands outside. While an
+     AI helps, every gatehouse of the castle it helps is watched in the game's own gate logic
+     (updateGateDrawBridgeOpenCloseLogic, per gatehouse per tick, where the open / close part
+     for a gate nobody has captured starts). Every few ticks the module looks for the helper's
+     troops within a few tiles of the gate on the outside (the area map, built with every gate
+     shut, tells inside from outside the keep's walls). If there are any, the gate is opened
+     the way the game opens it (+0x2A3 = 0xB "opening", applyGateOrDrawbridgeOpenCloseChange
+     for a drawbridge in front), the game's own close check is skipped, and their troop is
+     ordered to the keep. Once nobody waits, the game's own logic takes over again and shuts
+     it. When the help ends, the gate opens the same way for the helper's troops leaving.
 ]]
 
 local MODULE_NAME = "ally-support"
@@ -43,6 +53,7 @@ local DEFAULTS = {
   gold = { enabled = true, factor = 100, share = 25 },
   help = { enabled = true },
   army = { enabled = true, share = 75 },
+  gates = { enabled = true },
   diagnostics = { log = false },
 }
 
@@ -90,14 +101,34 @@ local TEAMS_OPERAND = 0x03
 local AOB_TICKS = "8B 87 50 0A 00 00 8B 8F 98 09 00 00 8B 15"
 local TICKS_OPERAND = 0x0E
 
+-- updateGateDrawBridgeOpenCloseLogic, after the capture part: movzx eax, word [edi + enemy timer].
+-- Offsets below are from the hook site (pattern + 1).
+local AOB_GATE = "C3 0F B7 87 ? ? ? ? 66 3B C2 7E 21 8B CD 69 C9 F4 39 00 00 83 C0 FF 39 91"
+local GATE_SITE, GATE_SITE_SIZE = 0x01, 7
+local GATE_TIMER = { 0x00, { 0x0F, 0xB7, 0x87 } }
+local GATE_DONE = { 0x79, { 0x0F, 0x8C } }       -- jl to the function's end
+local GATE_LINK = { 0x17D, { 0x80, 0xBF } }      -- cmp byte [edi + gate link state], 2
+local GATE_STATE = { 0x188, { 0xC6, 0x87 } }     -- mov byte [edi + gate state], 0xB
+local GATE_APPLY = 0x196
+
+-- GameState::canNavigateFromKeepToKeep: the area map. The tile map: rows and y of a tile.
+local AOB_KEEP_TO_KEEP = "56 8B 74 24 08 8B C6 69 C0 F4 39 00 00 03 C1 83 B8 ? ? ? ? 00 75 09 B8 01 00 00 00"
+local K2K_AREA = { 0x42, { 0x0F, 0xB7, 0x04, 0x4D } }
+local AOB_TILE_FLAGS = "F7 04 9D ? ? ? ? 00 01 00 00"
+local TILE_FLAGS_OPERAND = 0x03
+
 ---------------------------------------------------------------------------------------
 -- Layouts (the same in both executables unless read from code above)
 ---------------------------------------------------------------------------------------
 
-local U = { STRIDE = 0x490, STATE = 0x8C, TYPE = 0x8E, OWNER = 0x96, UID = 0x98, DYING = 0x2A0,
-  TRIBE = 0x2D8, BEHAVIOUR = 0x42A, STATE_OFFSET = 0x614 }
+local U = { STRIDE = 0x490, STATE = 0x8C, TYPE = 0x8E, OWNER = 0x96, UID = 0x98, X = 0xC4, Y = 0xC6,
+  TILE = 0xD4, DYING = 0x2A0, TRIBE = 0x2D8, BEHAVIOUR = 0x42A, STATE_OFFSET = 0x614 }
+local B = { STRIDE = 0x32C, TYPE = 0xD2, OWNER = 0xD6, X = 0xEE, Y = 0xF0, SIZE = 0xF8, LINK = 0x2A2,
+  STATE = 0x2A3, TIMER = 0x2C0, ARRAY = 0x14, MAX = 2000 }
+local MAP = { FLAGS = 0x165160, Y_OF_TILE = 0x742B90, ROWS = 0x8A40F8, AREA = 0x363ED0 }
 local P = {
-  STRIDE = 0x39F4, HAS_KEEP = 0x94, CAMP_X = 0x1D8, CAMP_Y = 0x1DC, RESOURCES = 0x4D0,
+  STRIDE = 0x39F4, HAS_KEEP = 0x94, KEEP_TILE = 0x1E0, CAMP_X = 0x1D8, CAMP_Y = 0x1DC,
+  RESOURCES = 0x4D0,
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
@@ -120,12 +151,19 @@ local ATTACK_FIRST, ATTACK_LAST = 10, 20
 local STAY_FIRST = { [5] = true, [29] = true, [30] = true, [39] = true, [40] = true, [41] = true,
   [58] = true, [59] = true, [60] = true, [61] = true, [77] = true }
 
+-- Large and small stone gatehouses, wooden gates.
+local GATEHOUSE = { [45] = true, [46] = true, [47] = true, [48] = true }
+local GATE_CLOSED, GATE_OPENING = 2, 0xB
+local GATE_RANGE = 5            -- tiles beyond the gatehouse's edge that count as at the door
+local GATE_CHECK_TICKS = 8      -- how often a watched gate looks for troops at its door
+local ORDER_TICKS = 40          -- a troop at the door is ordered inside at most this often
+
 ---------------------------------------------------------------------------------------
 -- Helpers
 ---------------------------------------------------------------------------------------
 
 local rd32, rd16, rd8 = core.readInteger, core.readSmallInteger, core.readByte
-local wr32, wr16 = core.writeInteger, core.writeSmallInteger
+local wr32, wr16, wr8 = core.writeInteger, core.writeSmallInteger, core.writeByte
 
 local function scan(pattern, purpose)
   local ok, address = pcall(core.AOBScan, pattern)
@@ -178,6 +216,10 @@ local F = {}             -- the game's functions, exposed to lua
 local O = {}             -- options
 local kept = {}         -- per AI player: { id, uid } of the troop kept home while it helps
 local swept = {}        -- per AI player: troops checked after a load
+local visitors = {}     -- per helped player: { [helper] = true } whose troops may use its gates
+local visitorUnits = {} -- per helper: its attack units sent to help
+local gates = {}        -- per watched gatehouse id: { owner, next, hold }
+local ordered = {}      -- per troop id: tick it was last ordered inside
 local lastTick = nil
 local broken = false
 
@@ -190,6 +232,17 @@ end
 local function player(p) return G.players + p * P.STRIDE end
 local function unit(id) return G.units + id * U.STRIDE end
 local function tribe(id) return G.tribes + id * G.tribeStride end
+local function building(id) return G.buildingArray + id * B.STRIDE end
+
+local function area(tile)
+  if tile == nil or tile <= 0 then return 0 end
+  return rd16(G.area + tile * 2) & 0xFFFF
+end
+
+local function tileXY(tile)
+  local y = rd16(G.yOfTile + tile * 2)
+  return tile - rd32(G.rows + y * 12), y
+end
 
 local function team(p) return rd32(G.teams + p * 4) end
 local function isAI(p) return rd32(player(p) + P.AI_TYPE) ~= 0 end
@@ -403,15 +456,173 @@ local function keepHome(h)
 end
 
 ---------------------------------------------------------------------------------------
+-- 5: the helped castle opens its gate for the relief
+---------------------------------------------------------------------------------------
+
+-- The castle h is helping right now, or nil.
+local function helping(h)
+  local base = player(h)
+  local asker = rd32(base + P.ASKER)
+  if rd32(base + P.REQUEST_STATE) == REQUEST_HELP and asker >= 1 and asker <= 8 and allies(h, asker)
+      and lordAlive(asker) then
+    return asker
+  end
+  return nil
+end
+
+local function keepArea(a) return area(rd32(player(a) + P.KEEP_TILE)) end
+
+local function inside(u, a) return area(rd32(u + U.TILE)) == keepArea(a) end
+
+-- Where relief troops go once inside: the helped lord's camp if it lies within the keep's walls,
+-- else the keep's own tile.
+local function insideSpot(a)
+  local base = player(a)
+  local x, y = rd32(base + P.CAMP_X), rd32(base + P.CAMP_Y)
+  if x > 0 and y > 0 and x < 400 and y < 400 and area(rd32(G.rows + y * 12) + x) == keepArea(a) then
+    return x, y
+  end
+  return tileXY(rd32(base + P.KEEP_TILE))
+end
+
+local function watch(a, on)
+  if on then
+    local count = math.min(rd32(G.buildings), B.MAX)
+    for id = 1, count - 1 do
+      local b = building(id)
+      if gates[id] == nil and rd16(b + B.OWNER) == a and GATEHOUSE[rd16(b + B.TYPE)] then
+        gates[id] = { owner = a, next = 0, hold = false }
+        wr8(G.gateFlags + id, 1)
+      end
+    end
+  else
+    for id, g in pairs(gates) do
+      if g.owner == a then
+        gates[id] = nil
+        wr8(G.gateFlags + id, 0)
+      end
+    end
+  end
+end
+
+-- Per AI cycle: which castles' gates h's troops may use, and which of its troops those are.
+local function watchGates(h)
+  local a = helping(h)
+  if a ~= nil and keepArea(a) ~= 0 then
+    local k = kept[h]
+    local units = {}
+    eachAttackUnit(h, function(index, u)
+      if k == nil or rd16(u + U.TRIBE) ~= k.id then units[#units + 1] = index end
+    end)
+    visitorUnits[h] = units
+    visitors[a] = visitors[a] or {}
+    visitors[a][h] = true
+    watch(a, true)
+    -- The game sends the relief to the gate again every cycle; troops already in stay in.
+    local x, y = insideSpot(a)
+    local done = {}
+    for _, index in ipairs(units) do
+      local u = unit(index)
+      local t = rd16(u + U.TRIBE)
+      if t > 0 and not done[t] and inside(u, a) then
+        done[t] = true
+        F.move(G.tribes, t, x, y, 0, 0, 0)
+      end
+    end
+  end
+  -- Castles h no longer helps stay watched while its troops are still inside, so they can leave.
+  for v, helpers in pairs(visitors) do
+    if helpers[h] and v ~= a then
+      local still = false
+      if keepArea(v) ~= 0 and allies(h, v) then
+        local units = {}
+        eachAttackUnit(h, function(index, u)
+          units[#units + 1] = index
+          if inside(u, v) then still = true end
+        end)
+        if a == nil then visitorUnits[h] = units end
+      end
+      if not still then
+        helpers[h] = nil
+        if next(helpers) == nil then
+          visitors[v] = nil
+          watch(v, false)
+        end
+      end
+    end
+  end
+end
+
+-- Per watched gatehouse per tick, from the game's gate logic: 1 = hold it open and skip the
+-- game's own open / close check.
+local function gateCheck(id)
+  local g = gates[id]
+  if g == nil then
+    wr8(G.gateFlags + id, 0)
+    return 0
+  end
+  local tick = rd32(G.ticks)
+  if tick >= g.next or g.next - tick > GATE_CHECK_TICKS then
+    g.next = tick + GATE_CHECK_TICKS
+    g.hold = false
+    local a = g.owner
+    local b = building(id)
+    local size = rd32(b + B.SIZE)
+    local gx, gy = rd16(b + B.X) + size // 2, rd16(b + B.Y) + size // 2
+    local reach = size // 2 + GATE_RANGE
+    local x, y
+    for h in pairs(visitors[a] or {}) do
+      local now = helping(h) == a
+      for _, index in ipairs(visitorUnits[h] or {}) do
+        local u = unit(index)
+        if rd16(u + U.OWNER) == h and rd16(u + U.STATE) == 2 and rd16(u + U.DYING) == 0
+            and math.abs(rd16(u + U.X) - gx) <= reach and math.abs(rd16(u + U.Y) - gy) <= reach then
+          local isIn = inside(u, a)
+          if now and not isIn then
+            -- Waiting outside: open up and send their troop in.
+            g.hold = true
+            local t = rd16(u + U.TRIBE)
+            local last = ordered[t]
+            if t > 0 and (last == nil or tick - last >= ORDER_TICKS or last > tick) then
+              if x == nil then x, y = insideSpot(a) end
+              F.move(G.tribes, t, x, y, 0, 0, 0)
+              ordered[t] = tick
+            end
+          elseif not now and isIn then
+            -- The help is over and they are on their way out.
+            g.hold = true
+          end
+        end
+      end
+    end
+  end
+  if not g.hold then return 0 end
+  local b = building(id)
+  if (rd8(b + B.LINK) & 0xFF) == GATE_CLOSED then
+    wr8(b + B.STATE, GATE_OPENING)
+    F.apply(G.buildings, id, 1, 0)
+    diag("gate %d of player %d opens for allied troops", id, g.owner)
+  end
+  return 1
+end
+
+---------------------------------------------------------------------------------------
 -- Per AI player, once per AI cycle
 ---------------------------------------------------------------------------------------
 
-local function update(h)
+local function checkLoad()
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
-    kept, swept = {}, {}
+    kept, swept, visitors, visitorUnits, gates, ordered = {}, {}, {}, {}, {}, {}
+    if G.gateFlags ~= nil then
+      for id = 0, B.MAX - 1 do wr8(G.gateFlags + id, 0) end
+    end
   end
   lastTick = tick
+end
+
+local function update(h)
+  checkLoad()
   if h < 1 or h > 8 or not isAI(h) or not lordAlive(h) then return end
   if O.army and not swept[h] then
     swept[h] = true
@@ -420,7 +631,26 @@ local function update(h)
   if O.goods or O.gold then answerRequests(h) end
   if O.help then answerHelp(h) end
   if O.army then keepHome(h) end
+  if O.gates then watchGates(h) end
 end
+
+local GATE_STUB = [[
+cmp ebx,MAX_BUILDINGS
+jae original
+cmp byte [FLAGS+ebx],0
+je original
+pushad
+mov [CURRENT],ebx
+call PAD
+popad
+cmp dword [HOLD],0
+jne skip
+original:
+movzx eax,word [edi+TIMER]
+jmp RESUME
+skip:
+jmp GATE_END
+]]
 
 local STUB = [[
 mov eax,[esp+4]
@@ -464,6 +694,28 @@ local function resolve()
     error(MODULE_NAME .. ": the player array is not laid out as the module expects")
   end
 
+  local gate = scan(AOB_GATE, "the gate open / close logic") + GATE_SITE
+  G.gateSite = gate
+  G.gateTimer = readOperand(gate, GATE_TIMER, "the gate timer")
+  G.buildingArray = G.gateTimer - B.TIMER
+  if G.buildingArray ~= G.buildings + B.ARRAY
+      or readOperand(gate, GATE_LINK, "the gate state") ~= G.buildingArray + B.LINK
+      or readOperand(gate, GATE_STATE, "the gate state") ~= G.buildingArray + B.STATE then
+    error(MODULE_NAME .. ": the building array is not laid out as the module expects")
+  end
+  expectBytes(gate + GATE_DONE[1], GATE_DONE[2], "the end of the gate logic")
+  G.gateEnd = gate + GATE_DONE[1] + 6 + rd32(gate + GATE_DONE[1] + 2)
+  local apply = readCallTarget(gate, GATE_APPLY, "applyGateOrDrawbridgeOpenCloseChange")
+
+  local k2k = scan(AOB_KEEP_TO_KEEP, "the keep to keep test")
+  G.area = readOperand(k2k, K2K_AREA, "the area map")
+  local tileMap = rd32(scan(AOB_TILE_FLAGS, "the tile flags") + TILE_FLAGS_OPERAND) - MAP.FLAGS
+  G.rows = tileMap + MAP.ROWS
+  G.yOfTile = tileMap + MAP.Y_OF_TILE
+  if G.area ~= tileMap + MAP.AREA then
+    error(MODULE_NAME .. ": the map layers are not laid out as the module expects")
+  end
+
   G.teams = rd32(scan(AOB_TEAMS, "the team table") + TEAMS_OPERAND)
   G.ticks = rd32(scan(AOB_TICKS, "the game tick counter") + TICKS_OPERAND)
 
@@ -475,6 +727,7 @@ local function resolve()
   F.addToTribe = core.exposeCode(readCallTarget(its, ITS_ADD_TO_TRIBE, "addUnitToTribe"), 3, 1)
   F.createTribe = core.exposeCode(scan(AOB_CREATE_TRIBE, "createTribeForPlayer"), 2, 1)
   F.move = core.exposeCode(scan(AOB_MOVE, "giveTribeMoveInstruction"), 7, 1)
+  F.apply = core.exposeCode(apply, 4, 1)
 end
 
 local function enable(self, config)
@@ -488,8 +741,9 @@ local function enable(self, config)
   O.army = setting(config, "army", "enabled") == true
   O.armyShare = number(setting(config, "army", "share"), 0, 100)
   if O.armyShare == 0 then O.army = false end
+  O.gates = setting(config, "gates", "enabled") == true
   O.log = setting(config, "diagnostics", "log") == true
-  if not (O.goods or O.gold or O.help or O.army) then
+  if not (O.goods or O.gold or O.help or O.army or O.gates) then
     log(INFO, MODULE_NAME .. ": every part is off")
     return
   end
@@ -516,16 +770,45 @@ local function enable(self, config)
   local stub = core.allocateAssembly(STUB, {
     PLAYER = slots, THIS = slots + 4, PAD = pad, ORIGINAL_TARGET = G.original,
   })
-  self.saved = { address = G.site, bytes = core.readBytes(G.site, 5) }
+  self.saved = { { address = G.site, bytes = core.readBytes(G.site, 5) } }
   core.writeCode(G.site, { 0xE8, core.itob(core.getRelativeAddress(G.site, stub, -5)) })
-  log(INFO, string.format("%s: on (goods %s, gold %s, help %s, army %s%%); hooked 0x%X",
+
+  if O.gates then
+    G.gateFlags = core.allocate(B.MAX, true)
+    local current = core.allocate(8, true)
+    local gatePad = core.allocateCode({ 0x90, 0x90, 0x90, 0x90, 0x90, 0xC3 })
+    core.detourCode(function(registers)
+      local hold = 0
+      if not broken then
+        local done, result = pcall(function()
+          checkLoad()
+          return gateCheck(rd32(current))
+        end)
+        if done then
+          hold = result
+        else
+          broken = true
+          log(WARNING, MODULE_NAME .. ": stopped after an error: " .. tostring(result))
+        end
+      end
+      wr32(current + 4, hold)
+      return registers
+    end, gatePad, 5)
+    local gateStub = core.allocateAssembly(GATE_STUB, {
+      MAX_BUILDINGS = B.MAX, FLAGS = G.gateFlags, CURRENT = current, HOLD = current + 4, PAD = gatePad,
+      TIMER = G.gateTimer, RESUME = G.gateSite + GATE_SITE_SIZE, GATE_END = G.gateEnd,
+    })
+    table.insert(self.saved, { address = G.gateSite, bytes = core.readBytes(G.gateSite, GATE_SITE_SIZE) })
+    core.writeCode(G.gateSite, { 0xE9, core.itob(core.getRelativeAddress(G.gateSite, gateStub, -5)), 0x90, 0x90 })
+  end
+  log(INFO, string.format("%s: on (goods %s, gold %s, help %s, army %s%%, gates %s); hooked 0x%X",
     MODULE_NAME, O.goods and "on" or "off", O.gold and "on" or "off", O.help and "on" or "off",
-    O.army and O.armyShare or 0, G.site))
+    O.army and O.armyShare or 100, O.gates and "on" or "off", G.site))
 end
 
 local function disable(self, config)
   if self.saved ~= nil then
-    core.writeCode(self.saved.address, self.saved.bytes)
+    for _, saved in ipairs(self.saved) do core.writeCode(saved.address, saved.bytes) end
     self.saved = nil
   end
 end

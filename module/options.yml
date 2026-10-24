@@ -84,6 +84,14 @@ options:
       min: 5
       max: 100
       step: 5
+  - url: ally-support.gates.enabled
+    name: ally-support-gates-enabled
+    text: '{{gates_enabled}}'
+    tooltip: '{{gates_enabled_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
 
 - display: GroupBox
   category: [Ally Support]

@@ -1,7 +1,7 @@
 # Ally Support
 
 **Author**: Monsterfish
-**Version**: 1.0.1
+**Version**: 1.0.2
 
 AI allies help each other the way they already help you. Every part can be switched off in the
 settings.
@@ -29,6 +29,10 @@ ally poorer than itself.
   75% of its attack army and keeps the rest at its own camp. Castle defenders, patrols and
   raiders always stay. Engineers, laddermen, tunnellers and siege engines are the first to stay
   home. When the help ends, everyone rejoins the army.
+- **The gate opens for the helpers.** When the helping troops stand in front of a gate of the
+  castle they help, the gate opens and they go inside to the lord's camp. Once nobody is waiting
+  at the door, the gate closes again by itself as usual (if enemies are near). When the help
+  ends, the gate opens the same way to let them out. This works for your gates too.
 
 Only allies (same team) get goods, gold or troops.
 

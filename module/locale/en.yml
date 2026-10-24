@@ -43,6 +43,13 @@ army_share: Share of the attack army sent (%)
 army_share_tooltip: |
   With 75, an attack army of 40 sends 30 and keeps 10 home. Troops recruited while it helps are
   split the same way.
+gates_enabled: Open the gate for the helpers
+gates_enabled_tooltip: |
+  A castle under attack keeps its gates shut, so the helpers end up standing outside. With this
+  on, when the helping troops stand in front of a gate of the castle they help, that gate opens
+  and they are sent inside to the lord's camp. Once nobody is waiting at the door, the gate goes
+  back to closing by itself as usual. When the help ends, the gate opens the same way to let
+  them out. This works for your gates too when an AI ally comes to help you.
 
 diagnostics_group: Diagnostics
 diagnostics_group_descr: |
@@ -50,4 +57,4 @@ diagnostics_group_descr: |
 diagnostics_log: Write what the allies send to the log
 diagnostics_log_tooltip: |
   Writes a line to ucp3.log whenever an AI sends goods or gold, starts or stops helping an
-  ally, or keeps troops home.
+  ally, keeps troops home, or opens a gate for allied troops.
