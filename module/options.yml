@@ -132,6 +132,14 @@ options:
     contents:
       type: boolean
       value: true
+  - url: ally-support.gates.keep
+    name: ally-support-gates-keep
+    text: '{{gates_keep}}'
+    tooltip: '{{gates_keep_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
 
 - display: GroupBox
   category: [Ally Support]

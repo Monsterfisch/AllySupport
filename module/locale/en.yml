@@ -76,9 +76,15 @@ gates_enabled: Open the gate for the helpers
 gates_enabled_tooltip: |
   A castle under attack keeps its gates shut, so the helpers end up standing outside. With this
   on, when the helping troops stand in front of a gate of the castle they help, that gate opens
-  and they are sent inside to the lord's camp. Once nobody is waiting at the door, the gate goes
+  and they are sent inside (onto the keep, see below). Once nobody is waiting at the door, the gate goes
   back to closing by itself as usual. When the help ends, the gate opens the same way to let
   them out. This works for your gates too when an AI ally comes to help you.
+gates_keep: Helpers stand on the ally's keep
+gates_keep_tooltip: |
+  Once inside, the helping troops are sent up onto the keep of the lord they help - the same
+  order an AI gives its own archers when it is nervous - so archers and crossbowmen can shoot
+  from up there. Whoever finds no room up top stands around the keep. Off: they gather at the
+  lord's camp instead.
 
 diagnostics_group: Diagnostics
 diagnostics_group_descr: |

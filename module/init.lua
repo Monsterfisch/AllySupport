@@ -60,7 +60,8 @@
      shut, tells inside from outside the keep's walls). If there are any, the gate is opened
      the way the game opens it (+0x2A3 = 0xB "opening", applyGateOrDrawbridgeOpenCloseChange
      for a drawbridge in front), the game's own close check is skipped, and their troop is
-     ordered to the keep. Once nobody waits, the game's own logic takes over again and shuts
+     ordered onto the helped lord's keep with the game's sendUnitsToKeep (troops already inside
+     get the same order every cycle, since the game keeps sending them to the gate). Once nobody waits, the game's own logic takes over again and shuts
      it. When the help ends, the gate opens the same way for the helper's troops leaving.
 ]]
 
@@ -71,7 +72,7 @@ local DEFAULTS = {
   gold = { enabled = true, factor = 100, share = 25, ask = true },
   help = { enabled = true, months = 6, recall = "strong" },
   army = { enabled = true, share = 75 },
-  gates = { enabled = true },
+  gates = { enabled = true, keep = true },
   diagnostics = { log = false },
 }
 
@@ -122,6 +123,7 @@ local AOB_SEND = "8B 87 ? ? ? ? 83 F8 01 74 ? 83 F8 02 75 ? 8B 87 ? ? ? ? 50 B9"
 local SEND_STATE = { 0x00, { 0x8B, 0x87 } }
 local SEND_ASKER = { 0x10, { 0x8B, 0x87 } }
 local SEND_TROOPS = 0x37
+local SEND_TO_KEEP = 0x142       -- in sendUnitsToPlayerIDsKeepIfPossible: call sendUnitsToKeep
 -- sendUnitsToPlayerIDsKeepIfPossible reads the helper's own camp: y, then x.
 local CAMP_Y = { 0x16, { 0x8B, 0x9E } }
 local CAMP_X = { 0x1D, { 0x8B, 0xBE } }
@@ -160,7 +162,7 @@ local B = { STRIDE = 0x32C, TYPE = 0xD2, OWNER = 0xD6, X = 0xEE, Y = 0xF0, SIZE 
   STATE = 0x2A3, TIMER = 0x2C0, ARRAY = 0x14, MAX = 2000 }
 local MAP = { FLAGS = 0x165160, Y_OF_TILE = 0x742B90, ROWS = 0x8A40F8, AREA = 0x363ED0 }
 local P = {
-  STRIDE = 0x39F4, HAS_KEEP = 0x94, KEEP_TILE = 0x1E0, CAMP_X = 0x1D8, CAMP_Y = 0x1DC,
+  STRIDE = 0x39F4, HAS_KEEP = 0x94, KEEP = 0x94, KEEP_TILE = 0x1E0, CAMP_X = 0x1D8, CAMP_Y = 0x1DC,
   RESOURCES = 0x4D0,
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
@@ -691,7 +693,18 @@ end
 
 local function keepArea(a) return area(rd32(player(a) + P.KEEP_TILE)) end
 
-local function inside(u, a) return area(rd32(u + U.TILE)) == keepArea(a) end
+-- On the helped lord's keep: its footprint (the roof is not in the keep's ground area).
+local function onKeep(u, a)
+  local id = rd32(player(a) + P.KEEP)
+  if id <= 0 or id >= B.MAX then return false end
+  local b = building(id)
+  local size = rd32(b + B.SIZE)
+  local x, y = rd16(u + U.X) - rd16(b + B.X), rd16(u + U.Y) - rd16(b + B.Y)
+  return x >= 0 and y >= 0 and x < size and y < size
+end
+
+local function inside(u, a) return area(rd32(u + U.TILE)) == keepArea(a) or onKeep(u, a) end
+
 
 -- Where relief troops go once inside: the helped lord's camp if it lies within the keep's walls,
 -- else the keep's own tile.
@@ -702,6 +715,18 @@ local function insideSpot(a)
     return x, y
   end
   return tileXY(rd32(base + P.KEEP_TILE))
+end
+
+-- Sends a relief troop to where it helps best once it can get in: onto the helped lord's keep
+-- with the game's own sendUnitsToKeep (what an AI does with its own archers when nervous), so
+-- archers and crossbowmen shoot from up there - or, with that setting off, to the lord's camp.
+local function sendIn(t, a)
+  if O.onKeep and rd32(player(a) + P.KEEP) > 0 then
+    F.toKeep(G.aiState, t, a)
+  else
+    local x, y = insideSpot(a)
+    F.move(G.tribes, t, x, y, 0, 0, 0)
+  end
 end
 
 local function watch(a, on)
@@ -738,14 +763,13 @@ local function watchGates(h)
     visitors[a][h] = true
     watch(a, true)
     -- The game sends the relief to the gate again every cycle; troops already in stay in.
-    local x, y = insideSpot(a)
     local done = {}
     for _, index in ipairs(units) do
       local u = unit(index)
       local t = rd16(u + U.TRIBE)
       if t > 0 and not done[t] and inside(u, a) then
         done[t] = true
-        F.move(G.tribes, t, x, y, 0, 0, 0)
+        sendIn(t, a)
       end
     end
   end
@@ -789,7 +813,6 @@ local function gateCheck(id)
     local size = rd32(b + B.SIZE)
     local gx, gy = rd16(b + B.X) + size // 2, rd16(b + B.Y) + size // 2
     local reach = size // 2 + GATE_RANGE
-    local x, y
     for h in pairs(visitors[a] or {}) do
       local now = helping(h) == a
       for _, index in ipairs(visitorUnits[h] or {}) do
@@ -803,8 +826,7 @@ local function gateCheck(id)
             local t = rd16(u + U.TRIBE)
             local last = ordered[t]
             if t > 0 and (last == nil or tick - last >= ORDER_TICKS or last > tick) then
-              if x == nil then x, y = insideSpot(a) end
-              F.move(G.tribes, t, x, y, 0, 0, 0)
+              sendIn(t, a)
               ordered[t] = tick
             end
           elseif not now and isIn then
@@ -929,6 +951,7 @@ local function resolve()
   end
   local sendTroops = readCallTarget(send, SEND_TROOPS, "sendUnitsToPlayerIDsKeepIfPossible")
   F.send = core.exposeCode(sendTroops, 3, 1)
+  F.toKeep = core.exposeCode(readCallTarget(sendTroops, SEND_TO_KEEP, "sendUnitsToKeep"), 3, 1)
   if readOperand(sendTroops, CAMP_X, "the helper's camp") ~= G.players + P.CAMP_X
       or readOperand(sendTroops, CAMP_Y, "the helper's camp") ~= G.players + P.CAMP_Y then
     error(MODULE_NAME .. ": the player array is not laid out as the module expects")
@@ -995,6 +1018,7 @@ local function enable(self, config)
   O.armyShare = number(setting(config, "army", "share"), 0, 100)
   if O.armyShare == 0 then O.army = false end
   O.gates = setting(config, "gates", "enabled") == true
+  O.onKeep = setting(config, "gates", "keep") == true
   O.log = setting(config, "diagnostics", "log") == true
   if not (O.goods or O.gold or O.goldAsk or O.help or O.army or O.gates) then
     log(INFO, MODULE_NAME .. ": every part is off")
