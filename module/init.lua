@@ -26,8 +26,9 @@
      answers a nervous AI ally the way it answers the player: requestStateUnk = 2,
      playerID_askerUnk = the ally. The AI's own state machine then sends the attack troops to
      that keep every cycle. The help ends once the ally is out of danger (not nervous) and
-     either the minimum stay (6 in-game months by default) is over or the ally feels strong
-     again (aiStrengthFeeling 2, set monthly by updateAIStrengthState).
+     either the minimum stay (6 in-game months by default) is over or, by the setting, the ally
+     feels strong again (aiStrengthFeeling 2, set monthly by updateAIStrengthState) or the
+     helper's own attack army is full (the game's test before it attacks).
   4. Army share: the game sends every attack troop to help. Whenever an AI is helping anyone
      (player or AI), 25% of its attack army (behaviours 10-20) is moved into a troop of its own
      (createTribeForPlayer) that the AI has not registered in aiTribeIDs and so never orders,
@@ -53,7 +54,7 @@ local MODULE_NAME = "ally-support"
 local DEFAULTS = {
   goods = { enabled = true },
   gold = { enabled = true, factor = 100, share = 25 },
-  help = { enabled = true, months = 6 },
+  help = { enabled = true, months = 6, recall = "strong" },
   army = { enabled = true, share = 75 },
   gates = { enabled = true },
   diagnostics = { log = false },
@@ -137,11 +138,12 @@ local P = {
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
-  REQUEST_STATE = 0x384C, ASKER = 0x38E4, STRENGTH_FEELING = 0x30F4,
+  REQUEST_STATE = 0x384C, ASKER = 0x38E4, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
+  WAVE_EXTRA = 0x38A0,
 }
 local T = { UID = 0x34, STATE = 0x40 }
 -- AIC fields live in the AI state object: (character - 1) * 0x2A4 + field.
-local AIC = { STRIDE = 0x2A4, MIN_GOODS = 0xA4, SUPPORT_THRESHOLD = 0x1FC }
+local AIC = { STRIDE = 0x2A4, MIN_GOODS = 0xA4, ATTACK_FORCE = 0x1F4, SUPPORT_THRESHOLD = 0x1FC }
 
 local GOLD = 15
 local LORD_TYPE = 55
@@ -330,6 +332,14 @@ local function needsHelp(r, h) return canBeHelped(r, h) and nervous(r) end
 local function months() return rd32(G.year) * 12 + rd32(G.month) end
 local function strong(r) return rd32(player(r) + P.STRENGTH_FEELING) == STRONG end
 
+-- The game's own "ready to attack" test (aiShouldAttackOrWaitForTeamCoordination): attack troops
+-- without engineers reach AttForceBase plus this wave's random extra.
+local function armyFull(h)
+  local base = player(h)
+  return rd32(base + P.ATTACK_TROOPS) - rd32(base + P.ATTACK_ENGINEERS)
+    >= aic(h, AIC.ATTACK_FORCE) + rd32(base + P.WAVE_EXTRA)
+end
+
 local function answerHelp(h)
   local base = player(h)
   local state = rd32(base + P.REQUEST_STATE)
@@ -342,11 +352,12 @@ local function answerHelp(h)
         since = { asker = asker, month = months() }    -- after a load the stay starts again
         helpSince[h] = since
       end
-      -- Stay while the ally is in danger, and after that until the minimum stay is over or
-      -- the ally feels strong again.
+      -- Stay while the ally is in danger, and after that until the minimum stay is over or,
+      -- by the setting, the ally feels strong again or the helper's own attack army is full.
       local stayed = months() - since.month
+      local early = (O.recall == "army" and armyFull(h)) or (O.recall ~= "army" and strong(asker))
       if not canBeHelped(asker, h)
-          or (not nervous(asker) and (stayed >= O.stayMonths or strong(asker))) then
+          or (not nervous(asker) and (stayed >= O.stayMonths or early)) then
         wr32(base + P.REQUEST_STATE, 0)
         helpSince[h] = nil
         diag("player %d stops helping player %d after %d months", h, asker, stayed)
@@ -766,6 +777,7 @@ local function enable(self, config)
   if O.goldShare == 0 then O.gold = false end
   O.help = setting(config, "help", "enabled") == true
   O.stayMonths = number(setting(config, "help", "months"), 0, 120)
+  O.recall = setting(config, "help", "recall") == "army" and "army" or "strong"
   O.army = setting(config, "army", "enabled") == true
   O.armyShare = number(setting(config, "army", "share"), 0, 100)
   if O.armyShare == 0 then O.army = false end

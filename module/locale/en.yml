@@ -36,8 +36,16 @@ help_enabled_tooltip: |
 help_months: Stay at least this many months
 help_months_tooltip: |
   Once the danger is over, the helpers still stay at the ally's castle for this many in-game
-  months - unless the ally feels strong again before that, then they leave. 0 sends them home
-  as soon as the danger is over.
+  months, unless the setting below calls them home sooner. 0 sends them home as soon as the
+  danger is over.
+help_recall: Call the helpers home sooner when
+help_recall_tooltip: |
+  Ends the minimum stay early once the danger is over. While the helpers are away their lord
+  doesn't attack anyone, so a long stay also holds back its own attack. "Its own army is ready"
+  calls them home as soon as the helping lord has the army size it waits for before attacking
+  (the troops at the ally's castle count), and it attacks right away.
+help_recall_strong: The ally feels strong again
+help_recall_army: Its own army is ready to attack
 army_enabled: Send only part of the attack army
 army_enabled_tooltip: |
   Normally an AI ally sends its whole attack army when it helps. With this on, it sends only

@@ -76,6 +76,19 @@ options:
       min: 0
       max: 24
       step: 1
+  - url: ally-support.help.recall
+    name: ally-support-help-recall
+    text: '{{help_recall}}'
+    tooltip: '{{help_recall_tooltip}}'
+    display: Choice
+    contents:
+      type: string
+      value: strong
+      choices:
+      - name: strong
+        text: '{{help_recall_strong}}'
+      - name: army
+        text: '{{help_recall_army}}'
   - url: ally-support.army.enabled
     name: ally-support-army-enabled
     text: '{{army_enabled}}'
