@@ -16,7 +16,8 @@
   This module runs once per AI player per AI cycle, right before the AI's food purchase plan
   (setFoodBuyPlan, the third call in updateAIBehaviour's per player block), and:
 
-  1. Goods: answers the requests in that AI's slots from AI allies with the same AIC test the
+  1. Goods (see 2b for how an AI's request reaches AI allies at all): answers the requests in
+     that AI's slots from AI allies with the same AIC test the
      game uses for the player (isResourceLargerOrEqualThanMinimumGoodsRequiredAfterTrade) and the
      same transfer (processResourceGain / processResourceLoss). A request is cleared either way,
      and once one ally has sent the goods the same request is cleared from the other AI allies.
@@ -28,10 +29,11 @@
      going down to half its trade minimum.
   2. Gold: a lord asked for goods that holds at least 100 x its MinimumGoodsRequiredAfterTrade in
      gold also sends the asker a share of the gold above that line.
-  2b. Asking for gold: a lord that wants goods it cannot afford asks its allies (player and
-     AIs) for the gold it is short, through requestGoods with resource 15. The player's ally
-     screen shows and sends gold already; AI allies send it if they stay above their gold line
-     (see 2), a weak ally up to half going down to half the line.
+  2b. Asking: the game's requestGoods only reaches human allies, so a lord that wants goods it
+     cannot afford offers the request to its AI allies directly (by the game's request rules),
+     and asks for the gold it is still short - AI allies directly (they send it if they stay
+     above their gold line, see 2; a weak ally up to half, going down to half the line), human
+     allies through requestGoods with resource 15, which their ally screen shows and answers.
   3. Help: an idle AI that is not nervous and has its AIC's support threshold of attack troops
      answers a nervous AI ally the way it answers the player: requestStateUnk = 2,
      playerID_askerUnk = the ally. The AI's own state machine then sends the attack troops to
@@ -163,7 +165,7 @@ local P = {
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
-  REQUEST_STATE = 0x384C, ASKER = 0x38E4, TO_ACQUIRE = 0x2A70, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
+  REQUEST_STATE = 0x384C, ASKER = 0x38E4, TO_ACQUIRE = 0x2A70, TOTAL_FOOD = 0x209C, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
   WAVE_EXTRA = 0x38A0,
 }
 local T = { UID = 0x34, STATE = 0x40 }
@@ -177,7 +179,7 @@ local WEAK, STRONG = 1, 2       -- aiStrengthFeeling: 0 normal, 1 weak, 2 strong
 local HELP_PAUSE_MONTHS = 3     -- after its help ends, a lord waits this long (or for its own
                                 -- attack) before it helps again
 local GOLD_MIN_FLOOR = 10       -- a trade minimum below this counts as this for the gold line
-local GOLD_ASK_MONTHS = 1       -- a lord asks for gold at most this often
+local ASK_MONTHS = 1            -- a lord asks its allies at most this often
 local GOLD_ASK_MAX = 30000      -- the request slot is a short
 local LOAD_GAP = 4000           -- a jump in the tick counter this big is a load
 
@@ -259,7 +261,7 @@ local gates = {}        -- per watched gatehouse id: { owner, next, hold }
 local ordered = {}      -- per troop id: tick it was last ordered inside
 local helpSince = {}    -- per AI player helping an AI: { asker, month } the help started
 local pause = {}        -- per AI player: month its last help ended
-local goldAsked = {}    -- per AI player: month it last asked for gold
+local asked = {}        -- per AI player: month it last asked its allies
 local wasHelping = {}   -- per AI player: it was helping someone at its last cycle
 local lastTick = nil
 local broken = false
@@ -467,33 +469,82 @@ local function answerHelp(h)
 end
 
 ---------------------------------------------------------------------------------------
--- 2b: AI lords ask their allies for gold
+-- 2b: AI lords ask their AI allies directly
 ---------------------------------------------------------------------------------------
 
--- When a lord wants goods (resourcesToAcquireArray, what buyRequiredGoods buys) and cannot
--- afford even the cheapest of them, it asks its allies - the player and AIs alike - for the
--- gold it is short, with the game's own requestGoods. At most once every GOLD_ASK_MONTHS.
-local function askForGold(h)
+-- The game's requestGoods only writes into the slots of human teammates (it skips every player
+-- whose CurrentPlayerFullIDArray entry is -1, i.e. every AI), so an AI ally never hears of a
+-- request. When a lord wants goods (resourcesToAcquireArray, what buyRequiredGoods buys) it
+-- cannot afford, it offers the request to its AI allies here, by the game's request rules:
+-- twice the amount, never hops, wheat or ale, food only when it has less than 5 left. What it
+-- still can't afford it asks gold for - from AI allies here, from human allies with the game's
+-- own requestGoods (they see it on their ally screen). At most once every ASK_MONTHS.
+local NEVER_ASKED = { [3] = true, [9] = true, [14] = true }
+local FOOD_FIRST, FOOD_LAST, STARVING = 10, 13, 5
+
+local function askAllies(r)
   local now = months()
-  local last = goldAsked[h]
-  if last ~= nil and last <= now and now - last < GOLD_ASK_MONTHS then return end
-  local base = player(h)
-  local total, cheapest = 0, nil
+  local last = asked[r]
+  if last ~= nil and last <= now and now - last < ASK_MONTHS then return end
+  local base = player(r)
+  local wants, total, cheapest = {}, 0, nil
   for resource = 0, 24 do
     local want = rd32(base + P.TO_ACQUIRE + resource * 4)
     if want > 0 and resource ~= GOLD then
-      local price = F.buyPrice(G.gameState, h, resource, want)
+      local price = F.buyPrice(G.gameState, r, resource, want)
       total = total + price
       if cheapest == nil or price < cheapest then cheapest = price end
+      if gold(r) < price then wants[#wants + 1] = { resource = resource, amount = want * 2 } end
     end
   end
-  local have = gold(h)
-  if cheapest == nil or have >= cheapest then return end
-  local amount = math.min(total - have, GOLD_ASK_MAX)
-  if amount <= 0 then return end
-  F.requestGoods(G.aiState, h, GOLD, amount)
-  goldAsked[h] = now
-  diag("player %d asks its allies for %d gold (has %d, wants goods for %d)", h, amount, have, total)
+  if #wants == 0 then return end
+  asked[r] = now
+
+  if O.goods then
+    local starving = rd32(base + P.TOTAL_FOOD) < STARVING
+    for _, w in ipairs(wants) do
+      local food = w.resource >= FOOD_FIRST and w.resource <= FOOD_LAST
+      if not NEVER_ASKED[w.resource] and (starving or not food) then
+        local given = false
+        for h = 1, 8 do
+          if not given and h ~= r and isAI(h) and lordAlive(h) and allies(h, r) then
+            local send = shipment(h, r, w.resource, w.amount)
+            if send > 0 then
+              sendGoods(h, r, w.resource, send)
+              given = true
+              diag("player %d sends player %d %d of %d asked of resource %d", h, r, send, w.amount,
+                w.resource)
+              if O.gold then shareGold(h, r) end
+            end
+          end
+        end
+        if not given then
+          diag("no AI ally of player %d can spare %d of resource %d", r, w.amount, w.resource)
+        end
+      end
+    end
+  end
+
+  if O.goldAsk and cheapest ~= nil and gold(r) < cheapest then
+    local amount = math.min(total - gold(r), GOLD_ASK_MAX)
+    if amount > 0 then
+      local given = false
+      for h = 1, 8 do
+        if not given and h ~= r and isAI(h) and lordAlive(h) and allies(h, r) then
+          local send = goldShipment(h, r, amount)
+          if send > 0 then
+            sendGold(h, r, send)
+            given = true
+            diag("player %d sends player %d %d of %d gold asked", h, r, send, amount)
+          end
+        end
+      end
+      if not given then
+        diag("no AI ally of player %d can spare %d gold", r, amount)
+        F.requestGoods(G.aiState, r, GOLD, amount)       -- human allies see it on their ally screen
+      end
+    end
+  end
 end
 
 ---------------------------------------------------------------------------------------
@@ -767,7 +818,7 @@ local function checkLoad()
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
     kept, swept, visitors, visitorUnits, gates, ordered, helpSince = {}, {}, {}, {}, {}, {}, {}
-    pause, wasHelping, goldAsked = {}, {}, {}
+    pause, wasHelping, asked = {}, {}, {}
     if G.gateFlags ~= nil then
       for id = 0, B.MAX - 1 do wr8(G.gateFlags + id, 0) end
     end
@@ -789,7 +840,7 @@ local function update(h)
       if isAI(p) and lordAlive(p) then answerRequests(p) end
     end
   end
-  if O.goldAsk then askForGold(h) end
+  if O.goods or O.goldAsk then askAllies(h) end
   if O.help then answerHelp(h) end
   if O.army then keepHome(h) end
   if O.gates then watchGates(h) end
