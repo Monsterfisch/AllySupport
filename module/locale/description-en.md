@@ -1,7 +1,7 @@
 # Ally Support
 
 **Author**: Monsterfish
-**Version**: 1.0.5
+**Version**: 1.0.6
 
 AI allies help each other the way they already help you. Every part can be switched off in the
 settings.
@@ -24,6 +24,13 @@ sends up to half of what was asked for, going down to half of its own minimum if
 A rich AI ally that is asked for goods also sends gold. Rich means it has at least 100 times
 its trade minimum in gold. It sends a quarter of what it has above that line, and only to an
 ally poorer than itself.
+
+## Asking for gold
+
+When an AI lord wants goods it can't afford, it now asks its allies - you and the AIs - for the
+gold it is short, at most once a month. You see it on your ally screen like any other request.
+An AI ally sends the gold if it still keeps its "rich" line afterwards; to a weak ally it sends
+up to half, going down to half that line if it must.
 
 ## Troops
 

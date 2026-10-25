@@ -25,6 +25,10 @@
      going down to half its trade minimum.
   2. Gold: a lord asked for goods that holds at least 100 x its MinimumGoodsRequiredAfterTrade in
      gold also sends the asker a share of the gold above that line.
+  2b. Asking for gold: a lord that wants goods it cannot afford asks its allies (player and
+     AIs) for the gold it is short, through requestGoods with resource 15. The player's ally
+     screen shows and sends gold already; AI allies send it if they stay above their gold line
+     (see 2), a weak ally up to half going down to half the line.
   3. Help: an idle AI that is not nervous and has its AIC's support threshold of attack troops
      answers a nervous AI ally the way it answers the player: requestStateUnk = 2,
      playerID_askerUnk = the ally. The AI's own state machine then sends the attack troops to
@@ -59,7 +63,7 @@ local MODULE_NAME = "ally-support"
 
 local DEFAULTS = {
   goods = { enabled = true, weak = true },
-  gold = { enabled = true, factor = 100, share = 25 },
+  gold = { enabled = true, factor = 100, share = 25, ask = true },
   help = { enabled = true, months = 6, recall = "strong" },
   army = { enabled = true, share = 75 },
   gates = { enabled = true },
@@ -95,6 +99,14 @@ local GIFT_GAME_STATE = { 0x35, { 0xB9 } }
 local GIFT_SELL_PRICE = 0x3A
 local GIFT_RECEIVED = { 0x3F, { 0x01, 0x04, 0x9D } }   -- add [receiver*4 + goods received], eax
 local GIFT_SENT = { 0x4E, { 0x8D, 0x1C, 0xB5 } }       -- lea ebx, [sender*4 + goods sent]
+
+-- buyRequiredGoods: the wish list and the price check before buying.
+local AOB_ACQUIRE = "8B 3C 8D ? ? ? ? 85 FF 74"
+local ACQUIRE_LIST = { 0x00, { 0x8B, 0x3C, 0x8D } }
+local AOB_BUY = "57 56 55 B9 ? ? ? ? E8 ? ? ? ? 39 83 ? ? ? ? 8B 4C 24 10 7D"
+local BUY_PRICE = 0x08
+-- AICState::requestGoods(player, resource, amount)
+local AOB_REQUEST_GOODS = "51 8B 54 24 08 8B C2 69 C0 F4 39 00 00 83 B8 ? ? ? ? 00 89 0C 24 0F 84"
 
 -- AICState::isResourceLargerOrEqualThanMinimumGoodsRequiredAfterTrade(player, resource, amount)
 local AOB_ENOUGH = "8B 44 24 04 8B D0 69 D2 F4 39 00 00 8B 92 ? ? ? ? 85 D2 75 06 8D 42 01 C2 0C 00"
@@ -148,7 +160,7 @@ local P = {
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
-  REQUEST_STATE = 0x384C, ASKER = 0x38E4, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
+  REQUEST_STATE = 0x384C, ASKER = 0x38E4, TO_ACQUIRE = 0x2A70, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
   WAVE_EXTRA = 0x38A0,
 }
 local T = { UID = 0x34, STATE = 0x40 }
@@ -162,6 +174,8 @@ local WEAK, STRONG = 1, 2       -- aiStrengthFeeling: 0 normal, 1 weak, 2 strong
 local HELP_PAUSE_MONTHS = 3     -- after its help ends, a lord waits this long (or for its own
                                 -- attack) before it helps again
 local GOLD_MIN_FLOOR = 10       -- a trade minimum below this counts as this for the gold line
+local GOLD_ASK_MONTHS = 1       -- a lord asks for gold at most this often
+local GOLD_ASK_MAX = 30000      -- the request slot is a short
 local LOAD_GAP = 4000           -- a jump in the tick counter this big is a load
 
 -- aiUnitBehaviourType 10-20: the attack army, the troops the game sends to help.
@@ -242,6 +256,7 @@ local gates = {}        -- per watched gatehouse id: { owner, next, hold }
 local ordered = {}      -- per troop id: tick it was last ordered inside
 local helpSince = {}    -- per AI player helping an AI: { asker, month } the help started
 local pause = {}        -- per AI player: month its last help ended
+local goldAsked = {}    -- per AI player: month it last asked for gold
 local wasHelping = {}   -- per AI player: it was helping someone at its last cycle
 local lastTick = nil
 local broken = false
@@ -298,8 +313,11 @@ local function clearRequest(p, from)
   wr16(player(p) + P.REQUESTED_AMOUNT + from * 2, 0)
 end
 
+-- The gold a lord always keeps: the "rich" line, a multiple of its AIC trade minimum.
+local function goldLine(h) return O.goldFactor * math.max(aic(h, AIC.MIN_GOODS), GOLD_MIN_FLOOR) end
+
 local function shareGold(h, r)
-  local line = O.goldFactor * math.max(aic(h, AIC.MIN_GOODS), GOLD_MIN_FLOOR)
+  local line = goldLine(h)
   local have = gold(h)
   if have < line or have <= gold(r) then return end
   local gift = (have - line) * O.goldShare // 100
@@ -329,6 +347,24 @@ local function shipment(h, r, resource, amount)
   return math.max(0, math.min(amount // 2, spare))
 end
 
+-- Gold moves as the game moves it when the player sends gold (straight between treasuries,
+-- counted at face value in the statistics).
+local function sendGold(h, r, amount)
+  wr32(player(h) + P.RESOURCES + GOLD * 4, gold(h) - amount)
+  wr32(player(r) + P.RESOURCES + GOLD * 4, gold(r) + amount)
+  wr32(G.goodsReceived + r * 4, rd32(G.goodsReceived + r * 4) + amount)
+  wr32(G.goodsSent + h * 4, rd32(G.goodsSent + h * 4) + amount)
+end
+
+-- Gold asked for: all of it if h stays above its gold line, a weak ally up to half of it if h
+-- can spare that by going down to half its line.
+local function goldShipment(h, r, amount)
+  local line = goldLine(h)
+  if gold(h) - amount >= line then return amount end
+  if not O.goodsWeak or rd32(player(r) + P.STRENGTH_FEELING) ~= WEAK then return 0 end
+  return math.max(0, math.min(amount // 2, gold(h) - (line + 1) // 2))
+end
+
 local function answerRequests(h)
   local base = player(h)
   for r = 1, 8 do
@@ -338,9 +374,13 @@ local function answerRequests(h)
       clearRequest(h, r)
       if allies(h, r) and isAI(r) and lordAlive(r) and amount > 0 then
         local send = 0
-        if O.goods and resource ~= GOLD then send = shipment(h, r, resource, amount) end
+        if resource == GOLD then
+          if O.goldAsk then send = goldShipment(h, r, amount) end
+        elseif O.goods then
+          send = shipment(h, r, resource, amount)
+        end
         if send > 0 then
-          sendGoods(h, r, resource, send)
+          if resource == GOLD then sendGold(h, r, send) else sendGoods(h, r, resource, send) end
           diag("player %d sends player %d %d of %d asked of resource %d", h, r, send, amount, resource)
           for o = 1, 8 do
             if o ~= h and o ~= r and isAI(o) and rd16(player(o) + P.REQUESTED + r * 2) == resource then
@@ -348,7 +388,7 @@ local function answerRequests(h)
             end
           end
         end
-        if O.gold then shareGold(h, r) end
+        if O.gold and resource ~= GOLD then shareGold(h, r) end
       end
     end
   end
@@ -417,6 +457,36 @@ local function answerHelp(h)
       return
     end
   end
+end
+
+---------------------------------------------------------------------------------------
+-- 2b: AI lords ask their allies for gold
+---------------------------------------------------------------------------------------
+
+-- When a lord wants goods (resourcesToAcquireArray, what buyRequiredGoods buys) and cannot
+-- afford even the cheapest of them, it asks its allies - the player and AIs alike - for the
+-- gold it is short, with the game's own requestGoods. At most once every GOLD_ASK_MONTHS.
+local function askForGold(h)
+  local now = months()
+  local last = goldAsked[h]
+  if last ~= nil and last <= now and now - last < GOLD_ASK_MONTHS then return end
+  local base = player(h)
+  local total, cheapest = 0, nil
+  for resource = 0, 24 do
+    local want = rd32(base + P.TO_ACQUIRE + resource * 4)
+    if want > 0 and resource ~= GOLD then
+      local price = F.buyPrice(G.gameState, h, resource, want)
+      total = total + price
+      if cheapest == nil or price < cheapest then cheapest = price end
+    end
+  end
+  local have = gold(h)
+  if cheapest == nil or have >= cheapest then return end
+  local amount = math.min(total - have, GOLD_ASK_MAX)
+  if amount <= 0 then return end
+  F.requestGoods(G.aiState, h, GOLD, amount)
+  goldAsked[h] = now
+  diag("player %d asks its allies for %d gold (has %d, wants goods for %d)", h, amount, have, total)
 end
 
 ---------------------------------------------------------------------------------------
@@ -690,7 +760,7 @@ local function checkLoad()
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
     kept, swept, visitors, visitorUnits, gates, ordered, helpSince = {}, {}, {}, {}, {}, {}, {}
-    pause, wasHelping = {}, {}
+    pause, wasHelping, goldAsked = {}, {}, {}
     if G.gateFlags ~= nil then
       for id = 0, B.MAX - 1 do wr8(G.gateFlags + id, 0) end
     end
@@ -705,7 +775,8 @@ local function update(h)
     swept[h] = true
     sweep(h)
   end
-  if O.goods or O.gold then answerRequests(h) end
+  if O.goods or O.gold or O.goldAsk then answerRequests(h) end
+  if O.goldAsk then askForGold(h) end
   if O.help then answerHelp(h) end
   if O.army then keepHome(h) end
   if O.gates then watchGates(h) end
@@ -815,6 +886,12 @@ local function resolve()
   F.gain = core.exposeCode(gain, 4, 1)
   F.loss = core.exposeCode(loss, 5, 1)
   F.sellPrice = core.exposeCode(sellPrice, 4, 1)
+  F.buyPrice = core.exposeCode(readCallTarget(scan(AOB_BUY, "the AI's purchase"), BUY_PRICE, "getBuyPrice"), 4, 1)
+  F.requestGoods = core.exposeCode(scan(AOB_REQUEST_GOODS, "requestGoods"), 4, 1)
+  if readOperand(scan(AOB_ACQUIRE, "the AI's wish list"), ACQUIRE_LIST, "the AI's wish list")
+      ~= G.players + P.TO_ACQUIRE then
+    error(MODULE_NAME .. ": the player array is not laid out as the module expects")
+  end
   F.removeFromTribe = core.exposeCode(remove, 3, 1)
   F.addToItsTribe = core.exposeCode(its, 3, 1)
   F.addToTribe = core.exposeCode(readCallTarget(its, ITS_ADD_TO_TRIBE, "addUnitToTribe"), 3, 1)
@@ -830,6 +907,7 @@ local function enable(self, config)
   O.gold = setting(config, "gold", "enabled") == true
   O.goldFactor = number(setting(config, "gold", "factor"), 1, 10000)
   O.goldShare = number(setting(config, "gold", "share"), 0, 100)
+  O.goldAsk = setting(config, "gold", "ask") == true
   if O.goldShare == 0 then O.gold = false end
   O.help = setting(config, "help", "enabled") == true
   O.stayMonths = number(setting(config, "help", "months"), 0, 120)
@@ -839,7 +917,7 @@ local function enable(self, config)
   if O.armyShare == 0 then O.army = false end
   O.gates = setting(config, "gates", "enabled") == true
   O.log = setting(config, "diagnostics", "log") == true
-  if not (O.goods or O.gold or O.help or O.army or O.gates) then
+  if not (O.goods or O.gold or O.goldAsk or O.help or O.army or O.gates) then
     log(INFO, MODULE_NAME .. ": every part is off")
     return
   end

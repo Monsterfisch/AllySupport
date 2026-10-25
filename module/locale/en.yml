@@ -21,6 +21,12 @@ gold_enabled: Rich AI allies send gold
 gold_enabled_tooltip: |
   When an AI ally asks for goods, a lord with lots of gold also sends it some gold - but only
   if the asker has less gold than the giver.
+gold_ask: AI lords ask their allies for gold
+gold_ask_tooltip: |
+  When an AI lord wants goods it can't afford, it asks you and its AI allies for the gold it is
+  short (at most once a month). You see the request on your ally screen like any other and can
+  send the gold from there. An AI ally sends it if it still has its "rich" line left afterwards
+  (see below); to a weak ally it sends up to half, going down to half that line if it must.
 gold_factor: Rich means this many times the trade minimum
 gold_factor_tooltip: |
   A lord counts as rich when its gold is at least this many times its "minimum goods kept after

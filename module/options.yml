@@ -36,6 +36,14 @@ options:
     contents:
       type: boolean
       value: true
+  - url: ally-support.gold.ask
+    name: ally-support-gold-ask
+    text: '{{gold_ask}}'
+    tooltip: '{{gold_ask_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
   - url: ally-support.gold.factor
     name: ally-support-gold-factor
     text: '{{gold_factor}}'
