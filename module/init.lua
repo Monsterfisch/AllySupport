@@ -165,12 +165,13 @@ local P = {
   LORD = 0x21F8, LORD_UID = 0x21FC,
   AI_TYPE = 0x2300, AI_STATE = 0x2BA4, ATTACK_TROOPS = 0x30F0, TRIBE_IDS = 0x310C,
   TRIBE_UIDS = 0x329C, NERVOUS = 0x3820, REQUESTED = 0x3824, REQUESTED_AMOUNT = 0x3838,
-  REQUEST_STATE = 0x384C, ASKER = 0x38E4, TO_ACQUIRE = 0x2A70, TOTAL_FOOD = 0x209C, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
+  REQUEST_STATE = 0x384C, ASKER = 0x38E4, TO_ACQUIRE = 0x2A70, TOTAL_FOOD = 0x209C,
+  REQUEST_DELAY = 0x3898, STRENGTH_FEELING = 0x30F4, ATTACK_ENGINEERS = 0x2BA8,
   WAVE_EXTRA = 0x38A0,
 }
 local T = { UID = 0x34, STATE = 0x40 }
 -- AIC fields live in the AI state object: (character - 1) * 0x2A4 + field.
-local AIC = { STRIDE = 0x2A4, MIN_GOODS = 0xA4, ATTACK_FORCE = 0x1F4, SUPPORT_THRESHOLD = 0x1FC }
+local AIC = { STRIDE = 0x2A4, REQUEST_DELAY = 0xA0, MIN_GOODS = 0xA4, ATTACK_FORCE = 0x1F4, SUPPORT_THRESHOLD = 0x1FC }
 
 local GOLD = 15
 local LORD_TYPE = 55
@@ -179,7 +180,7 @@ local WEAK, STRONG = 1, 2       -- aiStrengthFeeling: 0 normal, 1 weak, 2 strong
 local HELP_PAUSE_MONTHS = 3     -- after its help ends, a lord waits this long (or for its own
                                 -- attack) before it helps again
 local GOLD_MIN_FLOOR = 10       -- a trade minimum below this counts as this for the gold line
-local ASK_MONTHS = 1            -- a lord asks its allies at most this often
+local RETRY_WEEKS = 4           -- after a refused request a lord waits this many AI cycles
 local GOLD_ASK_MAX = 30000      -- the request slot is a short
 local LOAD_GAP = 4000           -- a jump in the tick counter this big is a load
 
@@ -261,7 +262,7 @@ local gates = {}        -- per watched gatehouse id: { owner, next, hold }
 local ordered = {}      -- per troop id: tick it was last ordered inside
 local helpSince = {}    -- per AI player helping an AI: { asker, month } the help started
 local pause = {}        -- per AI player: month its last help ended
-local asked = {}        -- per AI player: month it last asked its allies
+local retry = {}        -- per AI player: AI cycles left before it asks again after a refusal
 local wasHelping = {}   -- per AI player: it was helping someone at its last cycle
 local lastTick = nil
 local broken = false
@@ -478,15 +479,22 @@ end
 -- cannot afford, it offers the request to its AI allies here, by the game's request rules:
 -- twice the amount, never hops, wheat or ale, food only when it has less than 5 left. What it
 -- still can't afford it asks gold for - from AI allies here, from human allies with the game's
--- own requestGoods (they see it on their ally screen). At most once every ASK_MONTHS.
+-- own requestGoods (they see it on their ally screen). The AIC's AIRequestDelay applies as in
+-- the game.
 local NEVER_ASKED = { [3] = true, [9] = true, [14] = true }
 local FOOD_FIRST, FOOD_LAST, STARVING = 10, 13, 5
 
 local function askAllies(r)
-  local now = months()
-  local last = asked[r]
-  if last ~= nil and last <= now and now - last < ASK_MONTHS then return end
   local base = player(r)
+  -- The AIC request delay, kept the game's way: requestGoods asks only while PlayerData
+  -- aiRequestDelay is 0, an accepted request sets it to the AIC's AIRequestDelay (as
+  -- playThanksBikFromPlayerToPlayer does when the player sends goods), and updateAIBehaviour
+  -- counts it down by one each AI cycle (a week). After a refusal the lord waits RETRY_WEEKS.
+  if rd32(base + P.REQUEST_DELAY) > 0 then return end
+  if (retry[r] or 0) > 0 then
+    retry[r] = retry[r] - 1
+    return
+  end
   local wants, total, cheapest = {}, 0, nil
   for resource = 0, 24 do
     local want = rd32(base + P.TO_ACQUIRE + resource * 4)
@@ -498,7 +506,7 @@ local function askAllies(r)
     end
   end
   if #wants == 0 then return end
-  asked[r] = now
+  local accepted = false
 
   if O.goods then
     local starving = rd32(base + P.TOTAL_FOOD) < STARVING
@@ -512,6 +520,7 @@ local function askAllies(r)
             if send > 0 then
               sendGoods(h, r, w.resource, send)
               given = true
+              accepted = true
               diag("player %d sends player %d %d of %d asked of resource %d", h, r, send, w.amount,
                 w.resource)
               if O.gold then shareGold(h, r) end
@@ -535,6 +544,7 @@ local function askAllies(r)
           if send > 0 then
             sendGold(h, r, send)
             given = true
+            accepted = true
             diag("player %d sends player %d %d of %d gold asked", h, r, send, amount)
           end
         end
@@ -544,6 +554,11 @@ local function askAllies(r)
         F.requestGoods(G.aiState, r, GOLD, amount)       -- human allies see it on their ally screen
       end
     end
+  end
+  if accepted then
+    wr32(base + P.REQUEST_DELAY, math.max(0, aic(r, AIC.REQUEST_DELAY)))
+  else
+    retry[r] = RETRY_WEEKS
   end
 end
 
@@ -818,7 +833,7 @@ local function checkLoad()
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
     kept, swept, visitors, visitorUnits, gates, ordered, helpSince = {}, {}, {}, {}, {}, {}, {}
-    pause, wasHelping, asked = {}, {}, {}
+    pause, wasHelping, retry = {}, {}, {}
     if G.gateFlags ~= nil then
       for id = 0, B.MAX - 1 do wr8(G.gateFlags + id, 0) end
     end

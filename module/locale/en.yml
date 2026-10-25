@@ -7,7 +7,9 @@ goods_enabled_tooltip: |
   An AI ally only sends what it was asked for if it still keeps its own minimum afterwards
   (the "minimum goods kept after trade" of its AI character) - the same rule it uses when you
   ask it. Once one ally has sent the goods, the others don't send them again. An ally that
-  can't spare it turns the request down at once, so the asker can ask again. AI lords only
+  can't spare it turns the request down at once. After a request is filled, the asker waits
+  its "AI request delay" (from its AI character, counted in in-game weeks) before it asks
+  again; after a refusal it waits a month. AI lords only
   ask when they need something they can't afford to buy. What they send shows in the goods
   sent / received statistics at the end of the game.
 goods_weak: Weak allies get at least half
@@ -25,7 +27,7 @@ gold_enabled_tooltip: |
 gold_ask: AI lords ask their allies for gold
 gold_ask_tooltip: |
   When an AI lord wants goods it can't afford, it asks you and its AI allies for the gold it is
-  short (at most once a month). You see the request on your ally screen like any other and can
+  short (no more often than its AI request delay allows). You see the request on your ally screen like any other and can
   send the gold from there. An AI ally sends it if it still has its "rich" line left afterwards
   (see below); to a weak ally it sends up to half, going down to half that line if it must.
 gold_factor: Rich means this many times the trade minimum
