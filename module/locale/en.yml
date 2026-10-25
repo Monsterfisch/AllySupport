@@ -6,7 +6,13 @@ goods_enabled: AI allies send each other goods
 goods_enabled_tooltip: |
   An AI ally only sends what it was asked for if it still keeps its own minimum afterwards
   (the "minimum goods kept after trade" of its AI character) - the same rule it uses when you
-  ask it. Once one ally has sent the goods, the others don't send them again.
+  ask it. Once one ally has sent the goods, the others don't send them again. AI lords only
+  ask when they need something they can't afford to buy. What they send shows in the goods
+  sent / received statistics at the end of the game.
+goods_weak: Weak allies get at least half
+goods_weak_tooltip: |
+  When the asking ally is in a weak state and the giver can't spare the full amount, it sends
+  up to half of what was asked for. To do that it may go down to half of its own minimum.
 
 gold_group: Gold between AI allies
 gold_group_descr: |
@@ -35,15 +41,16 @@ help_enabled_tooltip: |
   The troops stay at least until the castle is safe again (see the next setting).
 help_months: Stay at least this many months
 help_months_tooltip: |
-  Once the danger is over, the helpers still stay at the ally's castle for this many in-game
-  months, unless the setting below calls them home sooner. 0 sends them home as soon as the
-  danger is over.
+  The helpers stay at the ally's castle at least this many in-game months, and longer while
+  the castle is still in danger - unless the setting below calls them home sooner. When they
+  are done, they march back to their own castle.
 help_recall: Call the helpers home sooner when
 help_recall_tooltip: |
-  Ends the minimum stay early once the danger is over. While the helpers are away their lord
-  doesn't attack anyone, so a long stay also holds back its own attack. "Its own army is ready"
-  calls them home as soon as the helping lord has the army size it waits for before attacking
-  (the troops at the ally's castle count), and it attacks right away.
+  Calls the helpers home at once, even before the minimum stay is over. While they are away
+  their lord doesn't attack anyone, so a long stay also holds back its own attack. "Its own
+  army is ready" calls them home as soon as the helping lord has the army size it waits for
+  before attacking (the troops at the ally's castle count). After a help ends, a lord waits 3
+  months, or until it has set out on its own attack, before it helps again.
 help_recall_strong: The ally feels strong again
 help_recall_army: Its own army is ready to attack
 army_enabled: Send only part of the attack army

@@ -13,6 +13,14 @@ options:
     contents:
       type: boolean
       value: true
+  - url: ally-support.goods.weak
+    name: ally-support-goods-weak
+    text: '{{goods_weak}}'
+    tooltip: '{{goods_weak_tooltip}}'
+    display: Switch
+    contents:
+      type: boolean
+      value: true
 
 - display: GroupBox
   category: [Ally Support]

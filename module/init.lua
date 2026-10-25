@@ -20,15 +20,21 @@
      game uses for the player (isResourceLargerOrEqualThanMinimumGoodsRequiredAfterTrade) and the
      same transfer (processResourceGain / processResourceLoss). A request is cleared either way,
      and once one ally has sent the goods the same request is cleared from the other AI allies.
+     Statistics (goods sent / received by value) are added as the game adds them. A weak ally
+     (aiStrengthFeeling 1) gets up to half of what it asked for if the giver can spare that by
+     going down to half its trade minimum.
   2. Gold: a lord asked for goods that holds at least 100 x its MinimumGoodsRequiredAfterTrade in
      gold also sends the asker a share of the gold above that line.
   3. Help: an idle AI that is not nervous and has its AIC's support threshold of attack troops
      answers a nervous AI ally the way it answers the player: requestStateUnk = 2,
      playerID_askerUnk = the ally. The AI's own state machine then sends the attack troops to
      that keep every cycle. The help ends once the ally is out of danger (not nervous) and
-     either the minimum stay (6 in-game months by default) is over or, by the setting, the ally
-     feels strong again (aiStrengthFeeling 2, set monthly by updateAIStrengthState) or the
-     helper's own attack army is full (the game's test before it attacks).
+     the minimum stay (6 in-game months by default) is over, or at once when, by the setting,
+     the ally feels strong again (aiStrengthFeeling 2, set monthly by updateAIStrengthState) or
+     the helper's own attack army is full (the game's test before it attacks). The game leaves
+     the troops where they are when a help ends, so they are sent home with
+     sendUnitsToPlayerIDsKeepIfPossible(helper, helper); the lord then waits 3 months or for its
+     own attack before it helps again.
   4. Army share: the game sends every attack troop to help. Whenever an AI is helping anyone
      (player or AI), 25% of its attack army (behaviours 10-20) is moved into a troop of its own
      (createTribeForPlayer) that the AI has not registered in aiTribeIDs and so never orders,
@@ -52,7 +58,7 @@
 local MODULE_NAME = "ally-support"
 
 local DEFAULTS = {
-  goods = { enabled = true },
+  goods = { enabled = true, weak = true },
   gold = { enabled = true, factor = 100, share = 25 },
   help = { enabled = true, months = 6, recall = "strong" },
   army = { enabled = true, share = 75 },
@@ -80,11 +86,15 @@ local ITS_ADD_TO_TRIBE = 0x44
 local AOB_CREATE_TRIBE = "53 55 8B 6C 24 0C 56 57 BF ? ? 00 00 2B FD 33 DB 3B FB 7E"
 local AOB_MOVE = "83 EC 34 33 C0 55 8B 6C 24 44 57 8B 7C 24 44 3B F8 89 4C 24 08 89 44 24 18"
 
--- ProcessAllyRequestingGoods, the branch where an AI ally sends the player what he asked for.
+-- ProcessAllyRequestingGoods, the branch where an AI ally sends the player what they asked for.
 local AOB_GIFT = "53 8B 5C 24 1C 55 53 56 B9 ? ? ? ? E8 ? ? ? ? 8B 6C 24 1C 55 57 53 B9 ? ? ? ? E8 ? ? ? ? 6A 00 55 57 56 B9 ? ? ? ? E8"
 local GIFT_BUILDINGS = { 0x19, { 0xB9 } }
 local GIFT_GAIN = 0x1E
 local GIFT_LOSS = 0x2D
+local GIFT_GAME_STATE = { 0x35, { 0xB9 } }
+local GIFT_SELL_PRICE = 0x3A
+local GIFT_RECEIVED = { 0x3F, { 0x01, 0x04, 0x9D } }   -- add [receiver*4 + goods received], eax
+local GIFT_SENT = { 0x4E, { 0x8D, 0x1C, 0xB5 } }       -- lea ebx, [sender*4 + goods sent]
 
 -- AICState::isResourceLargerOrEqualThanMinimumGoodsRequiredAfterTrade(player, resource, amount)
 local AOB_ENOUGH = "8B 44 24 04 8B D0 69 D2 F4 39 00 00 8B 92 ? ? ? ? 85 D2 75 06 8D 42 01 C2 0C 00"
@@ -148,7 +158,9 @@ local AIC = { STRIDE = 0x2A4, MIN_GOODS = 0xA4, ATTACK_FORCE = 0x1F4, SUPPORT_TH
 local GOLD = 15
 local LORD_TYPE = 55
 local REQUEST_HELP = 2
-local STRONG = 2                -- aiStrengthFeeling: 0 normal, 1 weak, 2 strong
+local WEAK, STRONG = 1, 2       -- aiStrengthFeeling: 0 normal, 1 weak, 2 strong
+local HELP_PAUSE_MONTHS = 3     -- after its help ends, a lord waits this long (or for its own
+                                -- attack) before it helps again
 local GOLD_MIN_FLOOR = 10       -- a trade minimum below this counts as this for the gold line
 local LOAD_GAP = 4000           -- a jump in the tick counter this big is a load
 
@@ -229,6 +241,8 @@ local visitorUnits = {} -- per helper: its attack units sent to help
 local gates = {}        -- per watched gatehouse id: { owner, next, hold }
 local ordered = {}      -- per troop id: tick it was last ordered inside
 local helpSince = {}    -- per AI player helping an AI: { asker, month } the help started
+local pause = {}        -- per AI player: month its last help ended
+local wasHelping = {}   -- per AI player: it was helping someone at its last cycle
 local lastTick = nil
 local broken = false
 
@@ -295,6 +309,26 @@ local function shareGold(h, r)
   diag("player %d sends player %d %d gold (had %d, keeps at least %d)", h, r, gift, have, line)
 end
 
+-- Moves goods the way the game does when an AI ally sends the player what they asked for,
+-- end-of-game statistics (goods sent / received, by value) included.
+local function sendGoods(h, r, resource, amount)
+  F.gain(G.buildings, r, resource, amount)
+  F.loss(G.buildings, h, resource, amount, 0)
+  local value = F.sellPrice(G.gameState, h, resource, amount)
+  wr32(G.goodsReceived + r * 4, rd32(G.goodsReceived + r * 4) + value)
+  wr32(G.goodsSent + h * 4, rd32(G.goodsSent + h * 4) + value)
+end
+
+-- How much h sends of a request: all of it if it keeps its AIC trade minimum afterwards (the
+-- game's own test). A weak ally gets up to half of it if h can spare that by going down to half
+-- its trade minimum.
+local function shipment(h, r, resource, amount)
+  if F.enough(G.aiState, h, resource, amount) ~= 0 then return amount end
+  if not O.goodsWeak or rd32(player(r) + P.STRENGTH_FEELING) ~= WEAK then return 0 end
+  local spare = rd32(player(h) + P.RESOURCES + resource * 4) - (aic(h, AIC.MIN_GOODS) + 1) // 2
+  return math.max(0, math.min(amount // 2, spare))
+end
+
 local function answerRequests(h)
   local base = player(h)
   for r = 1, 8 do
@@ -303,10 +337,11 @@ local function answerRequests(h)
       local amount = rd16(base + P.REQUESTED_AMOUNT + r * 2)
       clearRequest(h, r)
       if allies(h, r) and isAI(r) and lordAlive(r) and amount > 0 then
-        if O.goods and resource ~= GOLD and F.enough(G.aiState, h, resource, amount) ~= 0 then
-          F.gain(G.buildings, r, resource, amount)
-          F.loss(G.buildings, h, resource, amount, 0)
-          diag("player %d sends player %d %d of resource %d", h, r, amount, resource)
+        local send = 0
+        if O.goods and resource ~= GOLD then send = shipment(h, r, resource, amount) end
+        if send > 0 then
+          sendGoods(h, r, resource, send)
+          diag("player %d sends player %d %d of %d asked of resource %d", h, r, send, amount, resource)
           for o = 1, 8 do
             if o ~= h and o ~= r and isAI(o) and rd16(player(o) + P.REQUESTED + r * 2) == resource then
               clearRequest(o, r)
@@ -352,20 +387,25 @@ local function answerHelp(h)
         since = { asker = asker, month = months() }    -- after a load the stay starts again
         helpSince[h] = since
       end
-      -- Stay while the ally is in danger, and after that until the minimum stay is over or,
-      -- by the setting, the ally feels strong again or the helper's own attack army is full.
+      -- Stay the minimum stay, and longer while the ally is still in danger - unless, by the
+      -- setting, the ally feels strong again or the helper's own attack army is full: that
+      -- calls them home at once. (The game re-checks "in danger" once a month, and a weak lord
+      -- can stay in danger for good, so it must not hold up the early recall.)
       local stayed = months() - since.month
       local early = (O.recall == "army" and armyFull(h)) or (O.recall ~= "army" and strong(asker))
-      if not canBeHelped(asker, h)
-          or (not nervous(asker) and (stayed >= O.stayMonths or early)) then
+      if not canBeHelped(asker, h) or early or (stayed >= O.stayMonths and not nervous(asker)) then
         wr32(base + P.REQUEST_STATE, 0)
         helpSince[h] = nil
-        diag("player %d stops helping player %d after %d months", h, asker, stayed)
+        pause[h] = months()
+        diag("player %d stops helping player %d after %d months (%s)", h, asker, stayed,
+          early and (O.recall == "army" and "its army is ready" or "the ally is strong") or "stay over")
       end
     end
     return
   end
   helpSince[h] = nil
+  if rd32(base + P.AI_STATE) ~= 0 then pause[h] = nil end     -- it has set out to attack
+  if pause[h] ~= nil and months() - pause[h] < HELP_PAUSE_MONTHS then return end
   if state ~= 0 or rd32(base + P.AI_STATE) ~= 0 or nervous(h) then return end
   if rd32(base + P.ATTACK_TROOPS) < aic(h, AIC.SUPPORT_THRESHOLD) then return end
   for r = 1, 8 do
@@ -650,6 +690,7 @@ local function checkLoad()
   local tick = rd32(G.ticks)
   if lastTick == nil or tick < lastTick or tick - lastTick > LOAD_GAP then
     kept, swept, visitors, visitorUnits, gates, ordered, helpSince = {}, {}, {}, {}, {}, {}, {}
+    pause, wasHelping = {}, {}
     if G.gateFlags ~= nil then
       for id = 0, B.MAX - 1 do wr8(G.gateFlags + id, 0) end
     end
@@ -668,6 +709,14 @@ local function update(h)
   if O.help then answerHelp(h) end
   if O.army then keepHome(h) end
   if O.gates then watchGates(h) end
+  -- The game leaves the troops where they are when a help ends (also when the player calls it
+  -- off); send them home the way it sends them to an ally's keep.
+  local state = rd32(player(h) + P.REQUEST_STATE)
+  if wasHelping[h] and state == 0 then
+    F.send(G.aiState, h, h)
+    diag("player %d's troops go home", h)
+  end
+  wasHelping[h] = state == REQUEST_HELP
 end
 
 local GATE_STUB = [[
@@ -717,6 +766,10 @@ local function resolve()
   G.buildings = readOperand(gift, GIFT_BUILDINGS, "the buildings state")
   local gain = readCallTarget(gift, GIFT_GAIN, "processResourceGain")
   local loss = readCallTarget(gift, GIFT_LOSS, "processResourceLoss")
+  G.gameState = readOperand(gift, GIFT_GAME_STATE, "the game state")
+  local sellPrice = readCallTarget(gift, GIFT_SELL_PRICE, "getSellPrice")
+  G.goodsReceived = readOperand(gift, GIFT_RECEIVED, "the goods statistics")
+  G.goodsSent = readOperand(gift, GIFT_SENT, "the goods statistics")
   local enough = scan(AOB_ENOUGH, "the AI's trade minimum test")
 
   local send = scan(AOB_SEND, "how an AI answers a call for help")
@@ -725,6 +778,7 @@ local function resolve()
     error(MODULE_NAME .. ": the player array is not laid out as the module expects")
   end
   local sendTroops = readCallTarget(send, SEND_TROOPS, "sendUnitsToPlayerIDsKeepIfPossible")
+  F.send = core.exposeCode(sendTroops, 3, 1)
   if readOperand(sendTroops, CAMP_X, "the helper's camp") ~= G.players + P.CAMP_X
       or readOperand(sendTroops, CAMP_Y, "the helper's camp") ~= G.players + P.CAMP_Y then
     error(MODULE_NAME .. ": the player array is not laid out as the module expects")
@@ -760,6 +814,7 @@ local function resolve()
   F.enough = core.exposeCode(enough, 4, 1)
   F.gain = core.exposeCode(gain, 4, 1)
   F.loss = core.exposeCode(loss, 5, 1)
+  F.sellPrice = core.exposeCode(sellPrice, 4, 1)
   F.removeFromTribe = core.exposeCode(remove, 3, 1)
   F.addToItsTribe = core.exposeCode(its, 3, 1)
   F.addToTribe = core.exposeCode(readCallTarget(its, ITS_ADD_TO_TRIBE, "addUnitToTribe"), 3, 1)
@@ -771,6 +826,7 @@ end
 local function enable(self, config)
   config = config or {}
   O.goods = setting(config, "goods", "enabled") == true
+  O.goodsWeak = setting(config, "goods", "weak") == true
   O.gold = setting(config, "gold", "enabled") == true
   O.goldFactor = number(setting(config, "gold", "factor"), 1, 10000)
   O.goldShare = number(setting(config, "gold", "share"), 0, 100)
