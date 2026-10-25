@@ -6,7 +6,8 @@ goods_enabled: AI allies send each other goods
 goods_enabled_tooltip: |
   An AI ally only sends what it was asked for if it still keeps its own minimum afterwards
   (the "minimum goods kept after trade" of its AI character) - the same rule it uses when you
-  ask it. Once one ally has sent the goods, the others don't send them again. AI lords only
+  ask it. Once one ally has sent the goods, the others don't send them again. An ally that
+  can't spare it turns the request down at once, so the asker can ask again. AI lords only
   ask when they need something they can't afford to buy. What they send shows in the goods
   sent / received statistics at the end of the game.
 goods_weak: Weak allies get at least half

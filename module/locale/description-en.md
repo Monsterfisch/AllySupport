@@ -1,7 +1,7 @@
 # Ally Support
 
 **Author**: Monsterfish
-**Version**: 1.0.6
+**Version**: 1.0.7
 
 AI allies help each other the way they already help you. Every part can be switched off in the
 settings.
@@ -11,7 +11,9 @@ settings.
 When an AI lord runs short of something it can't buy, it asks its allies. Normally only you
 ever answer. Now its AI allies answer too - but only if they still keep their own minimum
 afterwards (the "minimum goods kept after trade" from their AI character), the same rule they
-use when you ask them. Once one ally has sent the goods, the others don't.
+use when you ask them. Once one ally has sent the goods, the others don't. An ally that can't
+spare it turns the request down at once, so the asker can ask again (for something else, or
+for gold).
 
 AI lords only ask when they need something they can't afford to buy, so it doesn't happen
 all the time. What they send shows in the goods sent / received statistics at the end.

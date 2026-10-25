@@ -20,6 +20,9 @@
      game uses for the player (isResourceLargerOrEqualThanMinimumGoodsRequiredAfterTrade) and the
      same transfer (processResourceGain / processResourceLoss). A request is cleared either way,
      and once one ally has sent the goods the same request is cleared from the other AI allies.
+     A request that can't be filled is denied the way the player's deny button does it (slot
+     emptied), and all AI allies' slots are settled on every AI cycle, so the asker can ask
+     again right away.
      Statistics (goods sent / received by value) are added as the game adds them. A weak ally
      (aiStrengthFeeling 1) gets up to half of what it asked for if the giver can spare that by
      going down to half its trade minimum.
@@ -387,6 +390,10 @@ local function answerRequests(h)
               clearRequest(o, r)
             end
           end
+        else
+          -- Denied: the slot is already empty, as the player's deny button leaves it, so the
+          -- ally can ask again.
+          diag("player %d can't spare %d of resource %d for player %d", h, amount, resource, r)
         end
         if O.gold and resource ~= GOLD then shareGold(h, r) end
       end
@@ -775,7 +782,13 @@ local function update(h)
     swept[h] = true
     sweep(h)
   end
-  if O.goods or O.gold or O.goldAsk then answerRequests(h) end
+  -- Every AI ally answers (or denies) what it was asked on any AI's cycle, not just its own, so
+  -- a request it can't fill frees the asker's slot at once.
+  if O.goods or O.gold or O.goldAsk then
+    for p = 1, 8 do
+      if isAI(p) and lordAlive(p) then answerRequests(p) end
+    end
+  end
   if O.goldAsk then askForGold(h) end
   if O.help then answerHelp(h) end
   if O.army then keepHome(h) end
